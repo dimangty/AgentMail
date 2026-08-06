@@ -368,7 +368,7 @@ private fun StatusPanel(snapshot: MonitorSnapshot, hasSecrets: Boolean) {
             DeliveryHistoryItem(delivery)
         }
         Spacer(Modifier.height(8.dp))
-        Text("Работает, пока приложение открыто и компьютер не спит.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+        Text("Закрытие окна не останавливает AgentMail; мониторинг работает до явного выхода.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
     }
 }
 
