@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
+/** Состояние формы настроек и выполняемой из UI операции. */
 data class ControllerState(
     val settings: AppSettings = AppSettings(),
     val hasSecrets: Boolean = false,
@@ -17,6 +18,10 @@ data class ControllerState(
     val noticeIsError: Boolean = false,
 )
 
+/**
+ * Связывает Compose UI с хранилищем настроек, внешними клиентами и мониторингом.
+ * При закрытии освобождает все переданные ему ресурсы.
+ */
 class AppController(
     private val store: SettingsStore,
     private val mailClient: ImapMailClient,
@@ -35,6 +40,10 @@ class AppController(
         monitoring.loadHistory(mutableState.value.settings, store.loadSecrets()?.telegramBotToken)
     }
 
+    /**
+     * Нормализует и сохраняет настройки. `null` в [enteredSecrets] оставляет keyring
+     * без изменений, а пустые отдельные поля дополняются ранее сохранёнными значениями.
+     */
     fun save(settings: AppSettings, enteredSecrets: Secrets?): Boolean = runCatching {
         val normalized = settings.normalized()
         val resolvedSecrets = resolveSecrets(enteredSecrets)
@@ -55,6 +64,7 @@ class AppController(
         false
     }
 
+    /** Проверяет конфигурацию, сохраняет её и запускает фоновый мониторинг. */
     fun start(settings: AppSettings, enteredSecrets: Secrets?) {
         if (snapshot.value.status == MonitorStatus.RUNNING) return
         val normalized = settings.normalized()
@@ -69,10 +79,15 @@ class AppController(
         monitoring.start(normalized, secrets)
     }
 
+    /** Асинхронно останавливает мониторинг, не блокируя UI-поток. */
     fun stop() {
         scope.launch { monitoring.stop() }
     }
 
+    /**
+     * Последовательно проверяет IMAP, LLM и Telegram, обновляя текст прогресса.
+     * Проверка Telegram отправляет реальное тестовое уведомление в указанный чат.
+     */
     fun testConnections(settings: AppSettings, enteredSecrets: Secrets?) {
         val normalized = settings.normalized()
         val secrets = resolveSecrets(enteredSecrets)
@@ -84,6 +99,7 @@ class AppController(
         checkNotNull(secrets)
         mutableState.value = mutableState.value.copy(busy = true, notice = "Проверяю IMAP...")
         scope.launch {
+            // Последовательный порядок позволяет UI точно показывать текущий этап проверки.
             runCatching {
                 mailClient.test(normalized, secrets.mailPassword)
                 mutableState.value = mutableState.value.copy(notice = "Проверяю модель...")
@@ -110,12 +126,14 @@ class AppController(
         )
     }
 
+    // Не допускаем отображения полного bot token в сообщении об ошибке.
     private fun redact(message: String): String = message
         .replace(Regex("bot[0-9]+:[A-Za-z0-9_-]+"), "bot***")
 
     private fun resolveSecrets(entered: Secrets?): Secrets? {
         val saved = store.loadSecrets()
         if (entered == null) return saved
+        // Пустое поле означает «оставить сохранённое значение», а не удалить его.
         return Secrets(
             mailPassword = entered.mailPassword.ifBlank { saved?.mailPassword.orEmpty() },
             llmApiKey = entered.llmApiKey.ifBlank { saved?.llmApiKey.orEmpty() },

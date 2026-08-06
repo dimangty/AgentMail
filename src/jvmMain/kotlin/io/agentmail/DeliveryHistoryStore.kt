@@ -8,6 +8,11 @@ import java.sql.DriverManager
 import java.sql.ResultSet
 import java.time.Instant
 
+/**
+ * Устойчивый журнал дедупликации доставок. Основной переход имеет вид
+ * `ATTEMPTING -> DELIVERED | FAILED | UNKNOWN`; `FAILED` можно снова зарезервировать,
+ * а `UNKNOWN` позднее подтвердить как `DELIVERED`.
+ */
 class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath()) : AutoCloseable {
     private val connection: Connection
 
@@ -15,6 +20,7 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
         databasePath.parent?.let(Files::createDirectories)
         connection = DriverManager.getConnection("jdbc:sqlite:${databasePath.toAbsolutePath()}")
         connection.createStatement().use { statement ->
+            // WAL уменьшает блокировки, FULL усиливает долговечность записи, timeout ждёт конкурирующую транзакцию.
             statement.execute("PRAGMA busy_timeout = 5000")
             statement.execute("PRAGMA journal_mode = WAL")
             statement.execute("PRAGMA synchronous = FULL")
@@ -47,6 +53,7 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
         recoverStaleAttempts()
     }
 
+    /** Возвращает `true` для любого состояния, кроме допускающего повтор `FAILED`. */
     @Synchronized
     fun isBlocked(profileKey: String, emailKey: String): Boolean {
         recoverStaleAttempts()
@@ -61,6 +68,10 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
         }
     }
 
+    /**
+     * Атомарно резервирует письмо перед отправкой. Повторная резервация разрешена
+     * только после гарантированного отказа со статусом [DeliveryStatus.FAILED].
+     */
     @Synchronized
     fun beginAttempt(
         profileKey: String,
@@ -69,6 +80,7 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
         uidValidity: Long,
     ): Boolean {
         val now = System.currentTimeMillis()
+        // Повторная вставка разрешена только после гарантированного отказа.
         return connection.prepareStatement(
             """
             INSERT INTO delivery_history (
@@ -94,21 +106,25 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
         }
     }
 
+    /** Фиксирует подтверждённую Telegram доставку. */
     @Synchronized
     fun markDelivered(profileKey: String, emailKey: String, telegramMessageId: Long?) {
         updateStatus(profileKey, emailKey, DeliveryStatus.DELIVERED, telegramMessageId, null)
     }
 
+    /** Фиксирует неоднозначный результат, который нельзя безопасно повторять автоматически. */
     @Synchronized
     fun markUnknown(profileKey: String, emailKey: String, error: String?) {
         updateStatus(profileKey, emailKey, DeliveryStatus.UNKNOWN, null, error)
     }
 
+    /** Фиксирует гарантированный отказ, после которого разрешён повтор. */
     @Synchronized
     fun markFailed(profileKey: String, emailKey: String, error: String?) {
         updateStatus(profileKey, emailKey, DeliveryStatus.FAILED, null, error)
     }
 
+    /** Возвращает последние записи выбранного профиля доставки. */
     @Synchronized
     fun recent(profileKey: String, limit: Int = 10): List<DeliveryRecord> {
         recoverStaleAttempts()
@@ -125,6 +141,7 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
     }
 
     private fun recoverStaleAttempts() {
+        // После сбоя неизвестно, принял ли Telegram запрос, поэтому зависшая попытка не становится FAILED.
         connection.prepareStatement(
             "UPDATE delivery_history SET status = 'UNKNOWN', updated_at_ms = ? " +
                 "WHERE status = 'ATTEMPTING' AND reserved_at_ms < ?"
@@ -144,6 +161,7 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
         error: String?,
     ) {
         val now = System.currentTimeMillis()
+        // SQL дополнительно защищает допустимый граф переходов от ошибочного вызова API хранилища.
         val allowedSource = when (status) {
             DeliveryStatus.DELIVERED -> "('ATTEMPTING', 'UNKNOWN')"
             DeliveryStatus.UNKNOWN, DeliveryStatus.FAILED -> "('ATTEMPTING')"
@@ -181,6 +199,7 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
     companion object {
         private const val STALE_ATTEMPT_MS = 2 * 60_000L
 
+        /** Выбирает системный каталог данных приложения для текущей платформы. */
         fun defaultDatabasePath(): Path {
             val home = System.getProperty("user.home")
             val os = System.getProperty("os.name").lowercase()

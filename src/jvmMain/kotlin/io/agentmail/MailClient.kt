@@ -19,6 +19,11 @@ import java.util.Properties
 import java.util.Date
 import java.nio.charset.Charset
 
+/**
+ * Результат одного опроса IMAP. [highestUid] задаёт вычисленную границу опроса,
+ * [initialized] обозначает первый запуск, а [failedUid] — первое неразобранное письмо.
+ * Вызывающий код должен обработать письма и ошибочный UID до сохранения границы.
+ */
 data class MailPollResult(
     val messages: List<MailMessage>,
     val highestUid: Long,
@@ -27,7 +32,12 @@ data class MailPollResult(
     val failedUid: Long? = null,
 )
 
+/** Читает новые письма из IMAP, не изменяя состояние почтового ящика. */
 class ImapMailClient {
+    /**
+     * Возвращает не более ста новых писем. UID сравниваются только внутри одного
+     * `UIDVALIDITY`; после его смены используется небольшой временной перехлёст.
+     */
     suspend fun poll(settings: AppSettings, password: String, cursor: MailCursor): MailPollResult =
         withContext(Dispatchers.IO) {
             val protocol = if (settings.useStartTls) "imap" else "imaps"
@@ -58,7 +68,7 @@ class ImapMailClient {
                     ?: 0L
                 val uidValidity = uidFolder.uidValidity
 
-                // A never-initialized cursor starts at the current end and never forwards history.
+                // Нулевой UIDVALIDITY означает первый запуск: начинаем с конца и не пересылаем историю.
                 if (cursor.uidValidity == 0L) {
                     return@withContext MailPollResult(
                         emptyList(),
@@ -70,6 +80,7 @@ class ImapMailClient {
 
                 val uidValidityChanged = cursor.uidValidity != uidValidity
                 val rawMessages = if (uidValidityChanged) {
+                    // После сброса UID ищем по дате с перехлёстом, чтобы не потерять пограничное письмо.
                     val since = Date((cursor.checkedAtEpochMillis - RESET_LOOKBACK_MS).coerceAtLeast(0L))
                     folder.search(ReceivedDateTerm(ComparisonTerm.GE, since))
                         .asList()
@@ -90,12 +101,14 @@ class ImapMailClient {
                     } catch (cancellation: CancellationException) {
                         throw cancellation
                     } catch (_: Exception) {
+                        // Останавливаемся на первом сбое, иначе курсор мог бы перепрыгнуть письмо.
                         failedUid = uid
                         break
                     }
                 }
                 MailPollResult(
                     messages = fetched,
+                    // При ошибке продвигаемся только до последнего успешно разобранного UID.
                     highestUid = when {
                         failedUid != null -> fetched.lastOrNull()?.uid ?: cursor.lastUid
                         rawMessages.isNotEmpty() -> uidFolder.getUID(rawMessages.last())
@@ -111,6 +124,7 @@ class ImapMailClient {
             }
         }
 
+    /** Проверяет подключение и доступ к папке, не загружая старые письма. */
     suspend fun test(settings: AppSettings, password: String) = withContext(Dispatchers.IO) {
         poll(settings, password, MailCursor())
     }
@@ -138,6 +152,7 @@ class ImapMailClient {
     private fun extractMultipart(multipart: Multipart): String {
         val parts = (0 until multipart.count).map { multipart.getBodyPart(it) }
         if (multipart.contentType.startsWith("multipart/alternative", ignoreCase = true)) {
+            // В альтернативных представлениях предпочитаем обычный текст перед HTML.
             return parts.firstText("text/plain") ?: parts.firstText("text/html").orEmpty()
         }
         return parts.asSequence()
@@ -158,6 +173,7 @@ class ImapMailClient {
         val charsetName = runCatching { ContentType(part.contentType).getParameter("charset") }.getOrNull()
         val charset = runCatching { Charset.forName(charsetName ?: "UTF-8") }.getOrDefault(Charsets.UTF_8)
         return part.inputStream.reader(charset).buffered().use { reader ->
+            // Ограничиваем чтение потока, чтобы большой MIME-part не занимал память целиком.
             val output = StringBuilder()
             val buffer = CharArray(4_096)
             while (output.length < MAX_BODY_CHARS) {

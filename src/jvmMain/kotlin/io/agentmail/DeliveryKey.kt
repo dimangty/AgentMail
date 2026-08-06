@@ -4,7 +4,12 @@ import java.security.MessageDigest
 import java.text.Normalizer
 import java.util.Locale
 
+/** Строит стабильные хешированные ключи профиля доставки и отдельного письма. */
 object DeliveryKey {
+    /**
+     * Область дедупликации включает почтовый ящик, Telegram-чат и идентификатор
+     * бота. Секретная часть токена намеренно не попадает даже во вход хеширования.
+     */
     fun profile(settings: AppSettings, telegramBotToken: String): String = sha256(
         listOf(
             "profile:v2",
@@ -14,13 +19,19 @@ object DeliveryKey {
             settings.folder,
             settings.telegramChatId,
             telegramBotToken.substringBefore(':').takeIf { it.all(Char::isDigit) }.orEmpty(),
+            // Нулевой символ исключает неоднозначность при склеивании полей разной длины.
         ).joinToString("\u0000")
     )
 
+    /**
+     * Предпочитает стандартный `Message-ID`, а при его отсутствии использует
+     * содержимое письма. IMAP UID не входит в ключ, чтобы пережить смену `UIDVALIDITY`.
+     */
     fun email(message: MailMessage): String {
         val canonicalMessageId = message.messageId?.canonicalMessageId()?.takeIf(String::isNotBlank)
         if (canonicalMessageId != null) return "mid:v1:${sha256(canonicalMessageId)}"
 
+        // Тело хешируется отдельно, чтобы не хранить его в составной строке отпечатка.
         val fingerprint = listOf(
             normalize(message.from).lowercase(Locale.ROOT),
             normalize(message.subject),
@@ -33,6 +44,7 @@ object DeliveryKey {
     private fun String.canonicalMessageId(): String {
         val unfolded = replace(Regex("\\s+"), "").removeSurrounding("<", ">")
         val separator = unfolded.lastIndexOf('@')
+        // Регистр локальной части сохраняется, доменная часть нечувствительна к регистру.
         return if (separator < 0) unfolded else {
             unfolded.substring(0, separator + 1) + unfolded.substring(separator + 1).lowercase(Locale.ROOT)
         }

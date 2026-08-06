@@ -13,7 +13,12 @@ import ai.koog.prompt.llm.LLMProvider
 import ai.koog.prompt.llm.LLModel
 import ai.koog.prompt.params.LLMParams
 
+/** Создаёт Koog-клиент выбранного провайдера и получает краткое содержание письма. */
 class KoogSummarizer {
+    /**
+     * Отправляет модели ограниченный фрагмент письма и ограничивает размер ответа.
+     * Ошибки не скрываются: решение о локальном fallback принимает вызывающий код.
+     */
     suspend fun summarize(settings: AppSettings, apiKey: String, message: MailMessage): String {
         val (client, model) = createClient(settings, apiKey)
         return client.use {
@@ -22,6 +27,7 @@ class KoogSummarizer {
                     id = "mail-mention-summary",
                     params = LLMParams(temperature = 0.1, maxTokens = 300),
                 ) {
+                    // Письмо считается недоверенными данными и не должно переопределять системную задачу.
                     system(
                         """
                         Ты помощник по корпоративной почте. Кратко перескажи письмо на языке письма в 2-4 предложениях.
@@ -30,6 +36,7 @@ class KoogSummarizer {
                         Не добавляй факты, которых нет в письме.
                         """.trimIndent()
                     )
+                    // Ограничение тела сдерживает стоимость и размер контекста запроса.
                     user(
                         """
                         От: ${message.from.take(500)}
@@ -43,10 +50,12 @@ class KoogSummarizer {
                 },
                 model = model,
             ).textContent()
+            // Итог должен помещаться в сообщение Telegram вместе с метаданными.
             response.trim().take(1_500)
         }
     }
 
+    /** Выполняет реальный короткий запрос к выбранной модели для проверки доступа. */
     suspend fun test(settings: AppSettings, apiKey: String) {
         val (client, model) = createClient(settings, apiKey)
         client.use {
@@ -99,6 +108,7 @@ class KoogSummarizer {
     private fun qwenModel(id: String): LLModel = when (id) {
         DashscopeModels.QWEN_FLASH.id -> DashscopeModels.QWEN_FLASH
         DashscopeModels.QWEN_PLUS_LATEST.id -> DashscopeModels.QWEN_PLUS_LATEST
+        // Неизвестное сохранённое значение безопасно откатывается к базовой модели.
         else -> DashscopeModels.QWEN_PLUS
     }
 }

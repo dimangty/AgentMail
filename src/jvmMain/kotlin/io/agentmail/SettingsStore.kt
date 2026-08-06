@@ -4,10 +4,15 @@ import com.github.javakeyring.Keyring
 import java.security.MessageDigest
 import java.util.prefs.Preferences
 
+/**
+ * Хранит обычные настройки и IMAP-курсоры в [Preferences], а чувствительные
+ * значения — только в системном keyring.
+ */
 class SettingsStore : AutoCloseable {
     private val preferences = Preferences.userRoot().node("io/agentmail")
     private val keyring = Keyring.create()
 
+    /** Загружает несекретные настройки, подставляя безопасные значения по умолчанию. */
     fun load(): AppSettings = AppSettings(
         email = preferences.get("email", ""),
         imapUsername = preferences.get("imapUsername", preferences.get("email", "")),
@@ -28,6 +33,7 @@ class SettingsStore : AutoCloseable {
         telegramChatId = preferences.get("telegramChatId", ""),
     )
 
+    /** Сохраняет настройки; [secrets] равный `null` не изменяет данные в keyring. */
     fun save(settings: AppSettings, secrets: Secrets?) {
         preferences.put("email", settings.email.trim())
         preferences.put("imapUsername", settings.imapUsername.trim())
@@ -52,6 +58,7 @@ class SettingsStore : AutoCloseable {
         preferences.flush()
     }
 
+    /** Возвращает только полный комплект секретов или `null`, если хотя бы один отсутствует. */
     fun loadSecrets(): Secrets? = runCatching {
         Secrets(
             mailPassword = keyring.getPassword(SERVICE, MAIL_PASSWORD),
@@ -62,6 +69,7 @@ class SettingsStore : AutoCloseable {
         it.mailPassword.isNotBlank() && it.llmApiKey.isNotBlank() && it.telegramBotToken.isNotBlank()
     }
 
+    /** Загружает позицию последнего опроса для конкретного почтового аккаунта. */
     fun cursor(accountKey: String): MailCursor {
         val key = accountKey.preferenceKey()
         return MailCursor(
@@ -71,6 +79,7 @@ class SettingsStore : AutoCloseable {
         )
     }
 
+    /** Сохраняет UID и время последнего завершённого этапа обработки. */
     fun saveCursor(accountKey: String, cursor: MailCursor) {
         val key = accountKey.preferenceKey()
         preferences.putLong("lastUid.$key", cursor.lastUid)
@@ -79,6 +88,7 @@ class SettingsStore : AutoCloseable {
         preferences.flush()
     }
 
+    /** Увеличивает счётчик неудачных разборов конкретного MIME-письма. */
     fun incrementMimeFailure(accountKey: String, uid: Long): Int {
         val key = "mimeFailure.${accountKey.preferenceKey()}.$uid"
         val count = preferences.getInt(key, 0) + 1
@@ -87,12 +97,14 @@ class SettingsStore : AutoCloseable {
         return count
     }
 
+    /** Удаляет счётчик MIME-ошибок после успеха или контролируемого пропуска письма. */
     fun clearMimeFailure(accountKey: String, uid: Long) {
         preferences.remove("mimeFailure.${accountKey.preferenceKey()}.$uid")
     }
 
     override fun close() = keyring.close()
 
+    // Короткий хеш не включает исходный account key в имя Preferences, но не является шифрованием.
     private fun String.preferenceKey(): String = MessageDigest.getInstance("SHA-256")
         .digest(toByteArray())
         .take(12)
@@ -106,6 +118,10 @@ class SettingsStore : AutoCloseable {
     }
 }
 
+/**
+ * Позиция IMAP-опроса. [lastUid] имеет смысл только для указанного [uidValidity],
+ * а время используется для восстановления после смены пространства UID.
+ */
 data class MailCursor(
     val lastUid: Long = 0L,
     val uidValidity: Long = 0L,

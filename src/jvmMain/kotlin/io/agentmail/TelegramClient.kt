@@ -18,6 +18,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
+/** Клиент Telegram Bot API с таймаутами, JSON-сериализацией и проверкой ответов. */
 class TelegramClient internal constructor(private val http: HttpClient) : AutoCloseable {
     constructor() : this(createHttpClient())
 
@@ -35,6 +36,7 @@ class TelegramClient internal constructor(private val http: HttpClient) : AutoCl
         }
     }
 
+    /** Проверяет токен через `getMe` и отправляет тестовое сообщение в указанный чат. */
     suspend fun test(token: String, chatId: String) {
         val response = http.get(endpoint(token, "getMe"))
         if (!response.status.isSuccess()) {
@@ -45,6 +47,10 @@ class TelegramClient internal constructor(private val http: HttpClient) : AutoCl
         send(token, chatId, "<b>AgentMail</b>: тестовое уведомление доставлено.")
     }
 
+    /**
+     * Отправляет заранее экранированный Telegram HTML и возвращает ID сообщения,
+     * если он присутствует в ответе API.
+     */
     suspend fun send(token: String, chatId: String, html: String): Long? {
         val response = http.post(endpoint(token, "sendMessage")) {
             header(HttpHeaders.ContentType, ContentType.Application.Json)
@@ -60,12 +66,14 @@ class TelegramClient internal constructor(private val http: HttpClient) : AutoCl
         if (!response.status.isSuccess()) {
             val description = runCatching { response.body<TelegramResponse>().description }.getOrNull()
             val message = "Telegram sendMessage: ${response.status.value} ${description.orEmpty()}".trim()
+            // Эти ответы не исправятся повтором без изменения токена, чата или текста.
             if (response.status.value in listOf(400, 401, 403)) throw PermanentConfigurationException(message)
             error(message)
         }
         val result = runCatching { response.body<TelegramResponse>() }.getOrElse {
             error("Некорректный ответ Telegram: ${response.bodyAsText().take(200)}")
         }
+        // Telegram может вернуть ошибку в JSON даже при успешном HTTP-статусе.
         if (!result.ok) throw PermanentConfigurationException(result.description ?: "Telegram sendMessage failed")
         return result.result?.messageId
     }
@@ -75,6 +83,7 @@ class TelegramClient internal constructor(private val http: HttpClient) : AutoCl
     private fun endpoint(token: String, method: String) = "https://api.telegram.org/bot$token/$method"
 }
 
+/** Ошибка конфигурации, для которой автоматический повтор запроса бессмыслен. */
 class PermanentConfigurationException(message: String) : IllegalStateException(message)
 
 @Serializable

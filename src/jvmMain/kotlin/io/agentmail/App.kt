@@ -63,6 +63,7 @@ private val Warm = Color(0xFFFFC36A)
 private val Danger = Color(0xFFFF7D8D)
 private val Muted = Color(0xFF93A4BD)
 
+/** Корневой экран настройки, запуска и наблюдения за почтовым агентом. */
 @Composable
 fun AgentMailApp(controller: AppController) {
     val controllerState by controller.state.collectAsState()
@@ -121,6 +122,7 @@ fun AgentMailApp(controller: AppController) {
                             settings.email,
                             { value ->
                                 val previousEmail = settings.email
+                                // Логин следует за email, пока пользователь не изменил его отдельно.
                                 settings = settings.copy(
                                     email = value,
                                     imapUsername = if (
@@ -473,6 +475,7 @@ private fun Metric(label: String, value: String, color: Color = Color.White) {
     }
 }
 
+/** Пустая форма означает, что ранее сохранённые секреты менять не нужно. */
 private fun enteredSecrets(mail: String, llm: String, telegram: String): Secrets? =
     if (mail.isBlank() && llm.isBlank() && telegram.isBlank()) null else Secrets(mail, llm, telegram)
 

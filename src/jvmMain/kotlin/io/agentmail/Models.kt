@@ -6,6 +6,7 @@ enum class LlmProviderType { QWEN, CUSTOM }
 
 enum class MonitorStatus { STOPPED, STARTING, RUNNING, STOPPING, ERROR }
 
+/** Несекретная конфигурация почты, правила упоминания, модели и доставки. */
 data class AppSettings(
     val email: String = "",
     val imapUsername: String = "",
@@ -24,12 +25,14 @@ data class AppSettings(
     val telegramChatId: String = "",
 )
 
+/** Чувствительные значения, которые нельзя сохранять в Preferences или писать в лог. */
 data class Secrets(
     val mailPassword: String,
     val llmApiKey: String,
     val telegramBotToken: String,
 )
 
+/** Письмо, где [uid] действителен только внутри текущего IMAP `UIDVALIDITY`. */
 data class MailMessage(
     val uid: Long,
     val messageId: String? = null,
@@ -39,8 +42,13 @@ data class MailMessage(
     val receivedAt: Instant?,
 )
 
+/**
+ * Состояние доставки: `UNKNOWN` блокирует опасный повтор при неясном результате,
+ * а `FAILED` разрешает повтор после гарантированного отказа.
+ */
 enum class DeliveryStatus { ATTEMPTING, DELIVERED, UNKNOWN, FAILED }
 
+/** Элемент устойчивой истории доставки для отображения в UI. */
 data class DeliveryRecord(
     val emailKey: String,
     val sender: String,
@@ -50,6 +58,7 @@ data class DeliveryRecord(
     val updatedAt: Instant,
 )
 
+/** Текущее состояние фонового сервиса и накопительные счётчики его работы. */
 data class MonitorSnapshot(
     val status: MonitorStatus = MonitorStatus.STOPPED,
     val lastCheck: Instant? = null,
@@ -61,6 +70,7 @@ data class MonitorSnapshot(
     val deliveries: List<DeliveryRecord> = emptyList(),
 )
 
+/** Убирает пробелы и унифицирует пути и URL перед сохранением и использованием. */
 fun AppSettings.normalized(): AppSettings = copy(
     email = email.trim(),
     imapUsername = imapUsername.trim(),
@@ -74,6 +84,7 @@ fun AppSettings.normalized(): AppSettings = copy(
     telegramChatId = telegramChatId.trim(),
 )
 
+/** Возвращает готовые для UI сообщения обо всех найденных ошибках конфигурации. */
 fun AppSettings.validationErrors(secretsAvailable: Boolean): List<String> = buildList {
     if (!email.contains('@')) add("Укажите корпоративный email")
     if (imapUsername.isBlank()) add("Укажите логин почты")
