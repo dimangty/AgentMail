@@ -5,14 +5,21 @@ import java.security.MessageDigest
 import java.util.prefs.Preferences
 
 /**
- * Хранит обычные настройки и IMAP-курсоры в [Preferences], а чувствительные
- * значения — только в системном keyring.
+ * Постоянное хранилище конфигурации и прогресса почтового монитора.
+ *
+ * Обычные настройки, IMAP-курсоры и счётчики MIME-ошибок сохраняются в
+ * пользовательском узле [Preferences], а чувствительные значения — только в
+ * системном keyring. Экземпляр владеет подключением к keyring и должен быть закрыт.
  */
 class SettingsStore : AutoCloseable {
     private val preferences = Preferences.userRoot().node("io/agentmail")
     private val keyring = Keyring.create()
 
-    /** Загружает несекретные настройки, подставляя безопасные значения по умолчанию. */
+    /**
+     * Загружает несекретные настройки, подставляя значения по умолчанию для ещё не
+     * сохранённых ключей. Старое отсутствие отдельного IMAP-логина компенсируется
+     * значением email, а неизвестный идентификатор LLM-провайдера мигрирует в Ollama.
+     */
     fun load(): AppSettings = AppSettings(
         email = preferences.get("email", ""),
         imapUsername = preferences.get("imapUsername", preferences.get("email", "")),
@@ -30,7 +37,13 @@ class SettingsStore : AutoCloseable {
         telegramChatId = preferences.get("telegramChatId", ""),
     )
 
-    /** Сохраняет настройки; [secrets] равный `null` не изменяет данные в keyring. */
+    /**
+     * Сохраняет нормализованные текстовые настройки и при необходимости [secrets].
+     *
+     * `null` не изменяет данные keyring. Почтовый пароль и Telegram-токен записываются
+     * как переданы, а пустой API-ключ не стирает ранее сохранённый ключ.
+     * Устаревшие настройки Qwen удаляются при каждом сохранении.
+     */
     fun save(settings: AppSettings, secrets: Secrets?) {
         preferences.put("email", settings.email.trim())
         preferences.put("imapUsername", settings.imapUsername.trim())
@@ -56,7 +69,14 @@ class SettingsStore : AutoCloseable {
         preferences.flush()
     }
 
-    /** Возвращает секреты, если сохранены обязательные для всех режимов почта и Telegram. */
+    /**
+     * Загружает комплект секретов из keyring.
+     *
+     * Возвращает `null`, если отсутствует почтовый пароль или Telegram-токен,
+     * обязательные для любого режима. Наличие API-ключа здесь не проверяется,
+     * поскольку для Ollama он не нужен; полноту для провайдера проверяет
+     * `Secrets.isCompleteFor`.
+     */
     fun loadSecrets(): Secrets? {
         val secrets = Secrets(
             mailPassword = password(MAIL_PASSWORD),
@@ -66,7 +86,11 @@ class SettingsStore : AutoCloseable {
         return secrets.takeIf { it.mailPassword.isNotBlank() && it.telegramBotToken.isNotBlank() }
     }
 
-    /** Загружает позицию последнего опроса для конкретного почтового аккаунта. */
+    /**
+     * Загружает позицию последнего опроса для [accountKey].
+     * Ключ аккаунта преобразуется в короткий хеш, чтобы исходный идентификатор
+     * не использовался в именах записей `Preferences`.
+     */
     fun cursor(accountKey: String): MailCursor {
         val key = accountKey.preferenceKey()
         return MailCursor(
@@ -76,7 +100,12 @@ class SettingsStore : AutoCloseable {
         )
     }
 
-    /** Сохраняет UID и время последнего завершённого этапа обработки. */
+    /**
+     * Сохраняет UID, соответствующий ему `UIDVALIDITY` и время последнего
+     * завершённого этапа обработки [accountKey]. Поля записываются в `Preferences`
+     * отдельно, поэтому метод не предоставляет транзакционной атомарности всего
+     * курсора. Явный `flush` перед возвратом передаёт изменения постоянному хранилищу.
+     */
     fun saveCursor(accountKey: String, cursor: MailCursor) {
         val key = accountKey.preferenceKey()
         preferences.putLong("lastUid.$key", cursor.lastUid)
@@ -85,7 +114,12 @@ class SettingsStore : AutoCloseable {
         preferences.flush()
     }
 
-    /** Увеличивает счётчик неудачных разборов конкретного MIME-письма. */
+    /**
+     * Увеличивает и возвращает устойчивый счётчик неудачных разборов MIME-письма.
+     * Ключ включает аккаунт и числовой IMAP UID, но не `UIDVALIDITY`. Поэтому после
+     * смены поколения папки повторно использованный UID может унаследовать старый
+     * счётчик, если прежняя запись не была очищена успешной обработкой или пропуском.
+     */
     fun incrementMimeFailure(accountKey: String, uid: Long): Int {
         val key = "mimeFailure.${accountKey.preferenceKey()}.$uid"
         val count = preferences.getInt(key, 0) + 1
@@ -94,11 +128,15 @@ class SettingsStore : AutoCloseable {
         return count
     }
 
-    /** Удаляет счётчик MIME-ошибок после успеха или контролируемого пропуска письма. */
+    /**
+     * Удаляет счётчик MIME-ошибок после успешного разбора или контролируемого
+     * пропуска письма, чтобы прежние отказы не влияли на дальнейшую обработку UID.
+     */
     fun clearMimeFailure(accountKey: String, uid: Long) {
         preferences.remove("mimeFailure.${accountKey.preferenceKey()}.$uid")
     }
 
+    /** Освобождает нативные ресурсы системного keyring, которыми владеет хранилище. */
     override fun close() = keyring.close()
 
     private fun password(key: String): String = runCatching { keyring.getPassword(SERVICE, key).orEmpty() }
@@ -118,13 +156,21 @@ class SettingsStore : AutoCloseable {
     }
 }
 
-/** Старый Qwen-профиль однократно переводится на локальный режим при следующем сохранении. */
+/**
+ * Преобразует сохранённое имя LLM-провайдера в поддерживаемый вариант.
+ * Только точное имя `CUSTOM` сохраняет корпоративный режим; старый Qwen-профиль
+ * и любые неизвестные значения безопасно переводятся в локальный режим Ollama.
+ */
 internal fun storedLlmProvider(value: String): LlmProviderType =
     if (value == LlmProviderType.CUSTOM.name) LlmProviderType.CUSTOM else LlmProviderType.OLLAMA
 
 /**
- * Позиция IMAP-опроса. [lastUid] имеет смысл только для указанного [uidValidity],
- * а время используется для восстановления после смены пространства UID.
+ * Устойчивая позиция завершённого IMAP-опроса для одного почтового аккаунта.
+ *
+ * [lastUid] имеет смысл только для указанного [uidValidity]. При смене пространства
+ * UID нельзя продолжать последовательный обход по старому значению, поэтому
+ * [checkedAtEpochMillis] служит временной границей для восстановления позиции.
+ * Нулевые значения обозначают отсутствие сохранённого прогресса.
  */
 data class MailCursor(
     val lastUid: Long = 0L,

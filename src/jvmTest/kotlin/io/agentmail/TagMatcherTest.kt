@@ -4,6 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
+/** Проверяет регистр и границы handle при поиске адресного упоминания. */
 class TagMatcherTest {
     @Test
     fun `matches exact tag ignoring case`() {

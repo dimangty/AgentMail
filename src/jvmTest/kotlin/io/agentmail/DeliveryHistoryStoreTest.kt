@@ -7,7 +7,12 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
+/** Проверяет долговечность блокирующих состояний журнала между подключениями к SQLite. */
 class DeliveryHistoryStoreTest {
+    /**
+     * Подтверждённая доставка должна переживать закрытие БД, оставаться видимой
+     * в недавней истории и запрещать резервацию того же письма даже с новым UIDVALIDITY.
+     */
     @Test
     fun `delivered message remains blocked after reopen`() {
         val directory = Files.createTempDirectory("agentmail-history-test")
@@ -28,6 +33,10 @@ class DeliveryHistoryStoreTest {
         }
     }
 
+    /**
+     * Быстрое переоткрытие после незавершённой отправки не должно разрешать дубль:
+     * до истечения срока восстановления запись сохраняет состояние `ATTEMPTING`.
+     */
     @Test
     fun `unfinished attempt remains blocked after immediate reopen`() {
         val directory = Files.createTempDirectory("agentmail-history-crash-test")

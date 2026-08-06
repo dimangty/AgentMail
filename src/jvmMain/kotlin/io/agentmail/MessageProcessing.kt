@@ -5,11 +5,20 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-/** Ищет точное упоминание тега с учётом Unicode и границ handle. */
+/**
+ * Ищет точное упоминание пользовательского тега в почтовом тексте.
+ *
+ * Сравнение приводит Unicode к форме NFKC и выполняется без учёта регистра,
+ * чтобы визуально эквивалентные варианты обрабатывались одинаково. При этом
+ * совпадение внутри более длинного handle не считается упоминанием.
+ */
 object TagMatcher {
     /**
-     * Проверяет наличие тега без учёта регистра. Буквы, цифры, `.`, `_` и `-`
-     * считаются продолжением handle, поэтому совпадение внутри длинного тега запрещено.
+     * Возвращает `true`, если [text] содержит отдельное упоминание [tag].
+     *
+     * Буквы и цифры любого Unicode-алфавита, а также `.`, `_` и `-` считаются
+     * продолжением handle с обеих сторон. Пустой или состоящий из пробелов тег
+     * никогда не совпадает.
      */
     fun contains(text: String, tag: String): Boolean {
         if (tag.isBlank()) return false
@@ -18,7 +27,10 @@ object TagMatcher {
         return Regex("(?<![\\p{L}\\p{N}._-])$normalizedTag(?![\\p{L}\\p{N}._-])").containsMatchIn(normalizedText)
     }
 
-    /** Ищет тег в теме и текстовом теле письма. */
+    /**
+     * Ищет [tag] сначала в теме, затем в текстовом теле [message].
+     * Совпадения в метаданных отправителя или иных MIME-частях не учитываются.
+     */
     fun matches(message: MailMessage, tag: String): Boolean =
         contains(message.subject, tag) || contains(message.body, tag)
 
@@ -26,13 +38,25 @@ object TagMatcher {
         Normalizer.normalize(value, Normalizer.Form.NFKC).lowercase(Locale.ROOT)
 }
 
-/** Формирует ограниченный по длине и безопасный HTML для Telegram. */
+/**
+ * Формирует HTML-уведомление для Telegram из недоверенных данных письма и модели.
+ *
+ * Все динамические фрагменты экранируются до включения в разметку и ограничиваются
+ * по длине так, чтобы итоговое сообщение укладывалось в лимит Telegram. Пустой ответ
+ * модели заменяется локальным фрагментом тела письма.
+ */
 object TelegramMessageFormatter {
     private val dateFormat = DateTimeFormatter.ofPattern("dd MMM yyyy, HH:mm")
         .withLocale(Locale.getDefault())
         .withZone(ZoneId.systemDefault())
 
-    /** Собирает уведомление, экранируя все данные письма и результат модели. */
+    /**
+     * Собирает готовое HTML-уведомление об упоминании [tag] в [message].
+     *
+     * Значения отправителя, темы, даты и [summary] рассматриваются как недоверенные:
+     * HTML в них не интерпретируется Telegram. Если [summary] пуст после удаления
+     * внешних пробелов, вместо него используется [localExcerpt].
+     */
     fun format(message: MailMessage, tag: String, summary: String): String {
         val date = message.receivedAt?.let(dateFormat::format) ?: "неизвестно"
         val safeSummary = summary.trim().ifBlank { localExcerpt(message) }
@@ -45,7 +69,11 @@ object TelegramMessageFormatter {
         }
     }
 
-    /** Возвращает локальный фрагмент письма, если модель недоступна или ответ пуст. */
+    /**
+     * Возвращает локальный фрагмент тела письма для резервного уведомления.
+     * Последовательности пробельных символов сворачиваются, результат ограничивается
+     * 700 символами, а полностью пустое тело заменяется поясняющим текстом.
+     */
     fun localExcerpt(message: MailMessage): String = message.body
         .replace(Regex("\\s+"), " ")
         .trim()

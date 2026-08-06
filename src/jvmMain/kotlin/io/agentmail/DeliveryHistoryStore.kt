@@ -9,9 +9,13 @@ import java.sql.ResultSet
 import java.time.Instant
 
 /**
- * Устойчивый журнал дедупликации доставок. Основной переход имеет вид
+ * Устойчивый SQLite-журнал дедупликации Telegram-доставок.
+ *
+ * Уникальность задаётся парой ключей профиля и письма. Основной переход имеет вид
  * `ATTEMPTING -> DELIVERED | FAILED | UNKNOWN`; `FAILED` можно снова зарезервировать,
- * а `UNKNOWN` позднее подтвердить как `DELIVERED`.
+ * `UNKNOWN` позднее подтвердить как `DELIVERED`, а остальные повторы блокируются.
+ * Операции чтения и изменения синхронизированы в пределах экземпляра, а WAL
+ * и ожидание занятой БД уменьшают конфликты между отдельными подключениями.
  */
 class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath()) : AutoCloseable {
     private val connection: Connection
@@ -53,7 +57,11 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
         recoverStaleAttempts()
     }
 
-    /** Возвращает `true` для любого состояния, кроме допускающего повтор `FAILED`. */
+    /**
+     * Проверяет, запрещена ли новая отправка для пары [profileKey] и [emailKey].
+     * Отсутствующая запись и `FAILED` не блокируют попытку; `ATTEMPTING`, `UNKNOWN`
+     * и `DELIVERED` блокируют. Перед чтением зависшие попытки переводятся в `UNKNOWN`.
+     */
     @Synchronized
     fun isBlocked(profileKey: String, emailKey: String): Boolean {
         recoverStaleAttempts()
@@ -69,8 +77,13 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
     }
 
     /**
-     * Атомарно резервирует письмо перед отправкой. Повторная резервация разрешена
-     * только после гарантированного отказа со статусом [DeliveryStatus.FAILED].
+     * Атомарно резервирует письмо перед внешним запросом к Telegram.
+     *
+     * Новая запись получает статус `ATTEMPTING`; существующая может быть обновлена
+     * только после гарантированного отказа [DeliveryStatus.FAILED]. Возвращает `true`,
+     * если резервация создана, и `false`, если дедупликационный ключ уже заблокирован.
+     * Текстовые метаданные письма ограничиваются перед записью, а тело в журнал
+     * не сохраняется.
      */
     @Synchronized
     fun beginAttempt(
@@ -106,25 +119,38 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
         }
     }
 
-    /** Фиксирует подтверждённую Telegram доставку. */
+    /**
+     * Фиксирует подтверждённую Telegram-доставку и необязательный ID сообщения.
+     * Допустим переход из `ATTEMPTING` или `UNKNOWN`; отсутствие подходящей
+     * резервации считается нарушением контракта и приводит к исключению.
+     */
     @Synchronized
     fun markDelivered(profileKey: String, emailKey: String, telegramMessageId: Long?) {
         updateStatus(profileKey, emailKey, DeliveryStatus.DELIVERED, telegramMessageId, null)
     }
 
-    /** Фиксирует неоднозначный результат, который нельзя безопасно повторять автоматически. */
+    /**
+     * Фиксирует неоднозначный результат сетевой попытки, который нельзя безопасно
+     * повторять автоматически. Переход допустим только из `ATTEMPTING`.
+     */
     @Synchronized
     fun markUnknown(profileKey: String, emailKey: String, error: String?) {
         updateStatus(profileKey, emailKey, DeliveryStatus.UNKNOWN, null, error)
     }
 
-    /** Фиксирует гарантированный отказ, после которого разрешён повтор. */
+    /**
+     * Фиксирует гарантированный отказ из состояния `ATTEMPTING`.
+     * После этого та же пара ключей может быть повторно зарезервирована.
+     */
     @Synchronized
     fun markFailed(profileKey: String, emailKey: String, error: String?) {
         updateStatus(profileKey, emailKey, DeliveryStatus.FAILED, null, error)
     }
 
-    /** Возвращает последние записи выбранного профиля доставки. */
+    /**
+     * Возвращает не более [limit] последних записей [profileKey] в порядке убывания
+     * времени изменения. Перед выборкой зависшие попытки переводятся в `UNKNOWN`.
+     */
     @Synchronized
     fun recent(profileKey: String, limit: Int = 10): List<DeliveryRecord> {
         recoverStaleAttempts()
@@ -194,12 +220,17 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
         updatedAt = Instant.ofEpochMilli(getLong("updated_at_ms")),
     )
 
+    /** Закрывает принадлежащее журналу JDBC-подключение к SQLite. */
     override fun close() = connection.close()
 
     companion object {
         private const val STALE_ATTEMPT_MS = 2 * 60_000L
 
-        /** Выбирает системный каталог данных приложения для текущей платформы. */
+        /**
+         * Возвращает платформенный путь к базе истории в пользовательском каталоге
+         * данных: Application Support на macOS, APPDATA на Windows и XDG-совместимый
+         * каталог на остальных системах. Родительский каталог создаётся конструктором.
+         */
         fun defaultDatabasePath(): Path {
             val home = System.getProperty("user.home")
             val os = System.getProperty("os.name").lowercase()

@@ -18,7 +18,13 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
+/** Контрактные тесты отбора локальных генеративных моделей из ответов Ollama API. */
 class OllamaModelsClientTest {
+    /**
+     * Проверяет весь путь фильтрации: cloud- и embedding-записи исключаются, известная
+     * completion-модель принимается сразу, а модель без capabilities уточняется через `/api/show`.
+     * Список запрошенных описаний дополнительно фиксирует, что лишние сетевые вызовы не выполняются.
+     */
     @Test
     fun `returns only local completion models`() = runTest {
         val inspectedModels = mutableListOf<String>()

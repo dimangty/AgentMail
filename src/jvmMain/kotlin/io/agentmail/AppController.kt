@@ -9,7 +9,15 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-/** Состояние формы настроек и выполняемой из UI операции. */
+/**
+ * Доступное UI состояние контроллера. [settings] отражает последнюю загруженную или
+ * успешно сохранённую конфигурацию, но не каждое редактирование формы: незавершённый
+ * ввод Compose хранит локально. Секреты наружу не передаются, вместо них публикуются
+ * только признаки наличия обязательного набора и пользовательского API-ключа.
+ *
+ * Поля Ollama описывают последний запрос каталога моделей, а [busy], [notice] и
+ * [noticeIsError] — состояние и результат выполняемой пользовательской операции.
+ */
 data class ControllerState(
     val settings: AppSettings = AppSettings(),
     val hasMailAndTelegramSecrets: Boolean = false,
@@ -24,7 +32,12 @@ data class ControllerState(
 
 /**
  * Связывает Compose UI с хранилищем настроек, внешними клиентами и мониторингом.
- * При закрытии освобождает все переданные ему ресурсы.
+ * Контроллер является границей между изменяемой локальной формой и сохранённой
+ * конфигурацией: разрешает частично введённые секреты, валидирует итоговый набор и
+ * публикует только безопасное состояние для отображения.
+ *
+ * При закрытии отменяет UI-операции и освобождает переданные ему закрываемые
+ * ресурсы. После [close] контроллер использовать нельзя.
  */
 class AppController(
     private val store: SettingsStore,
@@ -43,7 +56,9 @@ class AppController(
             hasCustomApiKey = !secrets?.llmApiKey.isNullOrBlank(),
         )
     })
+    /** Сохранённая конфигурация и состояние операций формы без значений секретов. */
     val state: StateFlow<ControllerState> = mutableState.asStateFlow()
+    /** Снимок фонового мониторинга; контроллер не дублирует, а напрямую экспортирует поток сервиса. */
     val snapshot: StateFlow<MonitorSnapshot> = monitoring.snapshot
 
     init {
@@ -51,8 +66,14 @@ class AppController(
     }
 
     /**
-     * Нормализует и сохраняет настройки. `null` в [enteredSecrets] оставляет keyring
-     * без изменений, а пустые отдельные поля дополняются ранее сохранёнными значениями.
+     * Нормализует и сохраняет настройки, затем синхронизирует [state] и историю
+     * доставки с новым профилем. Возвращает `true` только после успешной записи.
+     *
+     * `null` в [enteredSecrets] означает, что пользователь не редактировал ни одного
+     * секрета, и оставляет keyring без изменений. Если объект передан, его пустые
+     * поля дополняются ранее сохранёнными значениями, поэтому можно заменить только
+     * один секрет. Если передан хотя бы один новый секрет, итоговый набор должен быть
+     * полным; пустая форма всё же позволяет отдельно сохранить несекретные настройки.
      */
     fun save(settings: AppSettings, enteredSecrets: Secrets?): Boolean = runCatching {
         val normalized = settings.normalized()
@@ -82,7 +103,11 @@ class AppController(
         false
     }
 
-    /** Проверяет конфигурацию, сохраняет её и запускает фоновый мониторинг. */
+    /**
+     * Проверяет конфигурацию, сохраняет её и запускает фоновый мониторинг. Сервис
+     * получает нормализованный снимок настроек и разрешённые секреты на весь срок
+     * запуска; последующее редактирование формы само по себе на него не влияет.
+     */
     fun start(settings: AppSettings, enteredSecrets: Secrets?) {
         if (snapshot.value.status == MonitorStatus.RUNNING) return
         val normalized = settings.normalized()
@@ -105,6 +130,8 @@ class AppController(
     /**
      * Последовательно проверяет IMAP, LLM и Telegram, обновляя текст прогресса.
      * Проверка Telegram отправляет реальное тестовое уведомление в указанный чат.
+     * Настройки при этом не сохраняются, а секреты разрешаются по тем же правилам,
+     * что и при сохранении формы.
      */
     fun testConnections(settings: AppSettings, enteredSecrets: Secrets?) {
         val normalized = settings.normalized()
@@ -136,7 +163,11 @@ class AppController(
         }
     }
 
-    /** Асинхронно обновляет список локально установленных completion-моделей Ollama. */
+    /**
+     * Асинхронно обновляет список локально установленных completion-моделей Ollama.
+     * Параллельный запрос не запускается; ошибка запроса и пустой каталог получают
+     * разные сообщения, чтобы валидация объясняла причину отсутствия выбора модели.
+     */
     fun refreshOllamaModels() {
         if (mutableState.value.ollamaModelsLoading) return
         mutableState.value = mutableState.value.copy(ollamaModelsLoading = true, ollamaModelsError = null)
@@ -159,6 +190,10 @@ class AppController(
         }
     }
 
+    /**
+     * Объединяет общую валидацию конфигурации с проверкой Ollama-модели по последнему
+     * загруженному каталогу. Возвращаемые строки предназначены непосредственно для UI.
+     */
     private fun connectionErrors(settings: AppSettings, secrets: Secrets?): List<String> = buildList {
         addAll(settings.validationErrors(secrets))
         if (
@@ -188,6 +223,11 @@ class AppController(
     private fun redact(message: String): String = message
         .replace(Regex("bot[0-9]+:[A-Za-z0-9_-]+"), "bot***")
 
+    /**
+     * Собирает эффективный набор секретов для операции. Отсутствующий объект означает
+     * использование keyring как есть, а пустые поля переданного объекта наследуют
+     * сохранённые значения; явное удаление секрета этим контрактом не предусмотрено.
+     */
     private fun resolveSecrets(entered: Secrets?): Secrets? {
         val saved = store.loadSecrets()
         if (entered == null) return saved
@@ -199,6 +239,11 @@ class AppController(
         )
     }
 
+    /**
+     * Сначала запрашивает отмену незавершённых UI-корутин, не ожидая их завершения,
+     * затем закрывает мониторинг и сетевые клиенты, после чего освобождает keyring.
+     * Закрытие мониторинга также закрывает принадлежащий ему устойчивый журнал доставок.
+     */
     override fun close() {
         scope.cancel()
         monitoring.close()

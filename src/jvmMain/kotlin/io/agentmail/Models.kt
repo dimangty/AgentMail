@@ -2,11 +2,31 @@ package io.agentmail
 
 import java.time.Instant
 
+/**
+ * Поддерживаемые способы получения краткого содержания письма: локальная Ollama
+ * либо корпоративный OpenAI-совместимый HTTP endpoint.
+ *
+ * Выбор варианта определяет, какие поля настроек и секреты обязательны при
+ * валидации, но не меняет формат итогового Telegram-уведомления.
+ */
 enum class LlmProviderType { OLLAMA, CUSTOM }
 
+/**
+ * Состояние жизненного цикла фонового почтового монитора, публикуемое в UI.
+ * Переходные состояния позволяют отличить выполняющийся запуск или остановку
+ * от устойчивых состояний, а [ERROR] означает завершение работы с ошибкой.
+ */
 enum class MonitorStatus { STOPPED, STARTING, RUNNING, STOPPING, ERROR }
 
-/** Несекретная конфигурация почты, правила упоминания, модели и доставки. */
+/**
+ * Несекретная конфигурация полного контура обработки: чтения IMAP, поиска
+ * упоминания, обращения к модели и отправки результата в Telegram.
+ *
+ * Экземпляр может содержать ещё не нормализованные или невалидные пользовательские
+ * данные. Перед использованием их следует привести через [normalized] и проверить
+ * через [validationErrors]; доступность выбранной Ollama-модели проверяется отдельно
+ * через [hasAvailableOllamaModel]. Пароли и токены намеренно вынесены в [Secrets].
+ */
 data class AppSettings(
     val email: String = "",
     val imapUsername: String = "",
@@ -24,14 +44,27 @@ data class AppSettings(
     val telegramChatId: String = "",
 )
 
-/** Чувствительные значения, которые нельзя сохранять в Preferences или писать в лог. */
+/**
+ * Чувствительные учётные данные внешних систем.
+ *
+ * Эти значения предназначены для системного хранилища секретов и не должны
+ * попадать в `Preferences`, диагностические события или журналы приложения.
+ * API-ключ модели может быть пустым для локального провайдера Ollama.
+ */
 data class Secrets(
     val mailPassword: String,
     val llmApiKey: String,
     val telegramBotToken: String,
 )
 
-/** Письмо, где [uid] действителен только внутри текущего IMAP `UIDVALIDITY`. */
+/**
+ * Извлечённое из IMAP письмо в форме, необходимой последующей обработке.
+ *
+ * [uid] является адресом письма только внутри текущего пространства IMAP
+ * `UIDVALIDITY`, поэтому не используется как долговечная идентичность доставки.
+ * Для неё предпочтителен [messageId], а при его отсутствии строится отпечаток
+ * содержимого. [receivedAt] может отсутствовать у некорректного или неполного письма.
+ */
 data class MailMessage(
     val uid: Long,
     val messageId: String? = null,
@@ -42,12 +75,21 @@ data class MailMessage(
 )
 
 /**
- * Состояние доставки: `UNKNOWN` блокирует опасный повтор при неясном результате,
- * а `FAILED` разрешает повтор после гарантированного отказа.
+ * Состояние одной попытки доставки Telegram-уведомления.
+ *
+ * `ATTEMPTING` резервирует письмо до сетевого вызова, `DELIVERED` фиксирует
+ * подтверждённый успех, `UNKNOWN` блокирует опасный повтор при неясном результате,
+ * а `FAILED` разрешает новую попытку после гарантированного отказа.
  */
 enum class DeliveryStatus { ATTEMPTING, DELIVERED, UNKNOWN, FAILED }
 
-/** Элемент устойчивой истории доставки для отображения в UI. */
+/**
+ * Проекция устойчивой записи доставки для отображения в UI.
+ *
+ * В модель намеренно не входят технические данные резервации, IMAP UID и текст
+ * ошибки: она отражает только идентичность письма, текущее состояние и времена,
+ * нужные пользователю для просмотра недавней истории.
+ */
 data class DeliveryRecord(
     val emailKey: String,
     val sender: String,
@@ -57,7 +99,13 @@ data class DeliveryRecord(
     val updatedAt: Instant,
 )
 
-/** Текущее состояние фонового сервиса и накопительные счётчики его работы. */
+/**
+ * Неизменяемый снимок состояния фонового монитора для публикации в UI.
+ *
+ * Счётчики являются накопительными в рамках жизненного цикла монитора, [events]
+ * содержат пользовательские диагностические сообщения, а [deliveries] — актуальную
+ * проекцию устойчивой истории. Пустой снимок описывает ещё не запускавшийся сервис.
+ */
 data class MonitorSnapshot(
     val status: MonitorStatus = MonitorStatus.STOPPED,
     val lastCheck: Instant? = null,
@@ -69,7 +117,14 @@ data class MonitorSnapshot(
     val deliveries: List<DeliveryRecord> = emptyList(),
 )
 
-/** Убирает пробелы и унифицирует пути и URL перед сохранением и использованием. */
+/**
+ * Возвращает копию настроек в канонической текстовой форме перед сохранением
+ * и использованием.
+ *
+ * Метод убирает внешние пробелы, завершающий `/` у базового URL и начальный `/`
+ * у относительного пути чата. Он не исправляет значения и не заменяет
+ * [validationErrors].
+ */
 fun AppSettings.normalized(): AppSettings = copy(
     email = email.trim(),
     imapUsername = imapUsername.trim(),
@@ -83,7 +138,16 @@ fun AppSettings.normalized(): AppSettings = copy(
     telegramChatId = telegramChatId.trim(),
 )
 
-/** Возвращает готовые для UI сообщения обо всех найденных ошибках конфигурации. */
+/**
+ * Проверяет настройки и соответствующий им комплект [secrets], возвращая все
+ * обнаруженные ошибки как готовые для UI сообщения.
+ *
+ * Требования к модели зависят от [AppSettings.llmProvider]: Ollama требует выбранную
+ * локальную модель, корпоративный провайдер — HTTPS URL, ID модели и API-ключ.
+ * Это структурная проверка полей и секретов. Пустой список ещё не подтверждает,
+ * что выбранная Ollama-модель присутствует в актуальном локальном каталоге: перед
+ * запуском контроллер отдельно применяет [hasAvailableOllamaModel].
+ */
 fun AppSettings.validationErrors(secrets: Secrets?): List<String> = buildList {
     if (!email.contains('@')) add("Укажите корпоративный email")
     if (imapUsername.isBlank()) add("Укажите логин почты")
@@ -106,11 +170,20 @@ fun AppSettings.validationErrors(secrets: Secrets?): List<String> = buildList {
     }
 }
 
-/** Проверяет комплект секретов с учётом выбранного поставщика модели. */
+/**
+ * Возвращает `true`, если сохранены обязательные почтовый пароль и Telegram-токен,
+ * а для корпоративного провайдера также непустой API-ключ модели.
+ *
+ * Для Ollama [Secrets.llmApiKey] намеренно не участвует в результате.
+ */
 fun Secrets?.isCompleteFor(settings: AppSettings): Boolean =
     this != null && mailPassword.isNotBlank() && telegramBotToken.isNotBlank() &&
         (settings.llmProvider != LlmProviderType.CUSTOM || llmApiKey.isNotBlank())
 
-/** Проверяет, что Ollama-модель подтверждена актуальным локальным каталогом. */
+/**
+ * Проверяет доступность выбранной Ollama-модели по актуальному локальному каталогу.
+ * Для любого другого провайдера возвращает `true`, поскольку переданный список
+ * относится исключительно к Ollama.
+ */
 fun AppSettings.hasAvailableOllamaModel(models: List<String>): Boolean =
     llmProvider != LlmProviderType.OLLAMA || ollamaModel in models

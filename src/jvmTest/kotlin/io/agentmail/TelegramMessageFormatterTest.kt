@@ -5,7 +5,12 @@ import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
+/** Проверяет безопасность недоверенных данных и размер итоговой Telegram-разметки. */
 class TelegramMessageFormatterTest {
+    /**
+     * HTML отправителя должен экранироваться, а очень длинное резюме —
+     * усекаться так, чтобы готовое уведомление не превышало лимит Telegram.
+     */
     @Test
     fun `escapes untrusted html and stays within Telegram limit`() {
         val message = MailMessage(

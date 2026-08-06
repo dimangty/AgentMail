@@ -20,7 +20,12 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
+/** Контрактные тесты HTTP-представления запросов к Telegram Bot API. */
 class TelegramClientTest {
+    /**
+     * Проверяет сериализацию всех значимых параметров `sendMessage` и возврат `message_id`.
+     * MockEngine фиксирует wire-контракт без обращения к Telegram и без настоящего bot-токена.
+     */
     @Test
     fun `send serializes request as json`() = runTest {
         val engine = MockEngine { request ->

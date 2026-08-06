@@ -19,8 +19,12 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 /**
- * Управляет единственной фоновой задачей опроса почты и доставкой найденных
- * упоминаний. Сервис владеет журналом доставок и закрывает его вместе с собой.
+ * Координирует единственную фоновую задачу опроса почты: читает новые письма,
+ * отбирает упоминания, получает краткое содержание и доставляет результат в Telegram.
+ *
+ * Сервис хранит оперативное состояние в [snapshot], а устойчивые позиции IMAP и
+ * журнал дедупликации делегирует [SettingsStore] и [DeliveryHistoryStore]. Экземпляр
+ * владеет журналом доставок и закрывает его вместе с собой.
  */
 class MonitoringService(
     private val settingsStore: SettingsStore,
@@ -32,11 +36,19 @@ class MonitoringService(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val mutableSnapshot = MutableStateFlow(MonitorSnapshot())
 
-    /** Накопительное состояние мониторинга за время жизни сервиса. */
+    /**
+     * Накопительное состояние мониторинга за время жизни сервиса. Поток содержит
+     * статус текущей задачи, счётчики, последние события и проекцию устойчивой
+     * истории доставок; подписчики получают только неизменяемое представление.
+     */
     val snapshot: StateFlow<MonitorSnapshot> = mutableSnapshot.asStateFlow()
     private var monitorJob: Job? = null
 
-    /** Загружает последние доставки для профиля, заданного почтой, чатом и ботом. */
+    /**
+     * Загружает последние доставки для профиля, заданного почтой, чатом и ботом.
+     * Если профиль ещё нельзя однозначно построить, очищает список в снимке, чтобы
+     * UI не показывал историю от ранее выбранной конфигурации.
+     */
     fun loadHistory(settings: AppSettings, telegramBotToken: String?) {
         val normalized = settings.normalized()
         if (normalized.telegramChatId.isBlank() || normalized.imapHost.isBlank() || telegramBotToken.isNullOrBlank()) {
@@ -48,8 +60,15 @@ class MonitoringService(
     }
 
     /**
-     * Запускает мониторинг, если он ещё не запущен. Ошибки, классифицированные
-     * клиентами как постоянные, завершают задачу, остальные повторяются с задержкой.
+     * Запускает мониторинг с неизменяемым для этой задачи снимком [settings] и
+     * [secrets], если задача ещё не запущена. Для применения новой конфигурации
+     * текущий мониторинг требуется остановить и запустить заново.
+     *
+     * Ошибки аутентификации и конфигурации завершают задачу в состоянии ошибки.
+     * Ограниченная экспоненциальная задержка повторяет только цикл опроса до
+     * резервирования доставки. Если результат уже начатого Telegram-запроса
+     * неоднозначен, запись получает `UNKNOWN` и автоматически не отправляется снова.
+     * Отмена всегда пробрасывается и не маскируется логикой повторов.
      */
     fun start(settings: AppSettings, secrets: Secrets) {
         if (monitorJob != null) return
@@ -83,7 +102,11 @@ class MonitoringService(
         }
     }
 
-    /** Отменяет активную задачу и ожидает освобождения используемых ею ресурсов. */
+    /**
+     * Отменяет активную задачу и дожидается завершения её `finally`-блоков. При
+     * наличии задачи переводит снимок в [MonitorStatus.STOPPED]; повторный вызов
+     * после её удаления ничего не делает.
+     */
     suspend fun stop() {
         val job = monitorJob ?: return
         update { it.copy(status = MonitorStatus.STOPPING) }
@@ -93,13 +116,33 @@ class MonitoringService(
         addEvent("Мониторинг остановлен")
     }
 
+    /**
+     * Выполняет один последовательный цикл от чтения IMAP до фиксации доставок.
+     * Сначала загружается устойчивый курсор аккаунта, затем IMAP возвращает только
+     * письма после него либо временной перехлёст при смене `UIDVALIDITY`. Первый
+     * успешный контакт лишь устанавливает курсор на конец ящика, не рассылая архив.
+     *
+     * Каждое разобранное письмо обрабатывается строго по порядку. Для совпавшего
+     * письма сначала проверяется устойчивый ключ дедупликации, затем строится summary
+     * и непосредственно перед сетевой отправкой атомарно резервируется попытка.
+     * Курсор продвигается только после окончательного решения по письму: пропуска,
+     * подтверждённой доставки или уже существующей блокирующей записи. Поэтому сбой
+     * до такого решения оставляет письмо для следующего опроса.
+     *
+     * Отмена во время LLM-запроса безопасно оставляет письмо без резервации. Отмена
+     * или неясная ошибка во время Telegram-запроса переводит попытку в `UNKNOWN`:
+     * сервер мог принять сообщение, поэтому следующий опрос увидит дедупликацию и
+     * не создаст дубликат. Только гарантированный отказ помечается как `FAILED` и
+     * разрешает повтор после исправления конфигурации.
+     */
     private suspend fun pollOnce(settings: AppSettings, secrets: Secrets) {
+        // Курсор ограничен IMAP-аккаунтом, а профиль доставки дополнительно учитывает чат и бота.
         val accountKey = "${settings.email}|${settings.imapUsername}|${settings.imapHost}|${settings.folder}"
         val profileKey = DeliveryKey.profile(settings, secrets.telegramBotToken)
         var cursor = settingsStore.cursor(accountKey)
         val result = mailClient.poll(settings, secrets.mailPassword, cursor)
         if (result.initialized) {
-            // При первом подключении начинаем с конца ящика и не пересылаем старую историю.
+            // При первом подключении граница фиксируется до обработки: старую историю не пересылаем.
             cursor = MailCursor(result.highestUid, result.uidValidity, System.currentTimeMillis())
             settingsStore.saveCursor(accountKey, cursor)
             update { it.copy(lastCheck = Instant.now(), lastError = null) }
@@ -107,12 +150,14 @@ class MonitoringService(
             return
         }
 
+        // Порядок важен: перескакивать через письмо до устойчивого решения по нему нельзя.
         for (message in result.messages) {
             update { it.copy(checked = it.checked + 1) }
             if (TagMatcher.matches(message, settings.tag)) {
                 update { it.copy(matched = it.matched + 1) }
                 val emailKey = DeliveryKey.email(message)
                 if (history.isBlocked(profileKey, emailKey)) {
+                    // DELIVERED, UNKNOWN и незавершённая ATTEMPTING блокируют повтор; FAILED не блокирует.
                     addEvent("Уже отправлялось, пропущено: ${message.subject.ifBlank { "Без темы" }.take(45)}")
                     refreshHistory(profileKey)
                     cursor = MailCursor(message.uid, result.uidValidity, System.currentTimeMillis())
@@ -124,10 +169,11 @@ class MonitoringService(
                 } catch (cancellation: CancellationException) {
                     throw cancellation
                 } catch (_: Exception) {
+                    // Сбой модели не должен останавливать доставку: локальный фрагмент не требует LLM.
                     addEvent("Модель недоступна, отправлен фрагмент письма")
                     TelegramMessageFormatter.localExcerpt(message)
                 }
-                // Резервирование до запроса не допускает параллельную или повторную отправку.
+                // Атомарная резервация перед запросом закрывает окно для параллельной или повторной отправки.
                 if (!history.beginAttempt(profileKey, emailKey, message, result.uidValidity)) continue
                 val telegramMessageId = try {
                     telegram.send(
@@ -136,7 +182,7 @@ class MonitoringService(
                         html = TelegramMessageFormatter.format(message, settings.tag, summary),
                     )
                 } catch (cancellation: CancellationException) {
-                    // После прерванного запроса результат неизвестен, поэтому автоматический повтор опасен.
+                    // Отмена не доказывает отказ Telegram: запрос мог завершиться уже после отмены корутины.
                     history.markUnknown(profileKey, emailKey, "Отправка прервана")
                     refreshHistory(profileKey)
                     throw cancellation
@@ -146,7 +192,7 @@ class MonitoringService(
                     refreshHistory(profileKey)
                     throw rejected
                 } catch (error: Exception) {
-                    // Неклассифицированный сбой считаем неоднозначным: Telegram мог уже принять сообщение.
+                    // Неклассифицированный сбой неоднозначен: Telegram мог принять сообщение до разрыва связи.
                     history.markUnknown(profileKey, emailKey, safeError(error))
                     refreshHistory(profileKey)
                     throw error
@@ -156,14 +202,14 @@ class MonitoringService(
                 update { it.copy(sent = it.sent + 1) }
                 addEvent("Отправлено: ${message.subject.ifBlank { "Без темы" }.take(60)}")
             }
-            // Курсор продвигается только после окончательного решения по текущему письму.
+            // Запись после обработки создаёт устойчивую границу: после перезапуска письмо не читается повторно.
             cursor = MailCursor(message.uid, result.uidValidity, System.currentTimeMillis())
             settingsStore.saveCursor(accountKey, cursor)
             settingsStore.clearMimeFailure(accountKey, message.uid)
         }
         result.failedUid?.let { failedUid ->
             val failures = settingsStore.incrementMimeFailure(accountKey, failedUid)
-            // Повреждённое письмо временно удерживает курсор, сохраняя порядок обработки.
+            // Повреждённое письмо удерживает курсор; лимит не позволяет ему навсегда заблокировать ящик.
             if (failures < MAX_MIME_ATTEMPTS) {
                 error("Не удалось прочитать MIME-письмо UID $failedUid (попытка $failures)")
             }
@@ -175,6 +221,7 @@ class MonitoringService(
             addEvent("Повреждённое MIME-письмо UID $failedUid пропущено после $failures попыток")
             return
         }
+        // Без MIME-сбоя можно зафиксировать всю вычисленную IMAP-клиентом границу, включая пустой опрос.
         settingsStore.saveCursor(
             accountKey,
             MailCursor(result.highestUid, result.uidValidity, System.currentTimeMillis()),
@@ -197,11 +244,16 @@ class MonitoringService(
         update { it.copy(deliveries = history.recent(profileKey)) }
     }
 
+    /** Возвращает ограниченный безопасный текст ошибки, скрывая похожий на Telegram token фрагмент. */
     private fun safeError(error: Throwable): String =
         (error.message ?: error::class.simpleName ?: "Неизвестная ошибка")
             .replace(Regex("bot[0-9]+:[A-Za-z0-9_-]+"), "bot***")
             .take(300)
 
+    /**
+     * Синхронно останавливает мониторинг, отменяет корневой scope и закрывает журнал.
+     * После вызова экземпляр больше не предназначен для повторного запуска.
+     */
     override fun close() {
         runBlocking { stop() }
         scope.coroutineContext[Job]?.cancel()

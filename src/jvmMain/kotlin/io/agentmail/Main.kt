@@ -20,11 +20,18 @@ import java.awt.EventQueue
 import java.awt.SystemTray
 import org.jetbrains.compose.resources.painterResource
 
+/**
+ * Запускает desktop-приложение и связывает время жизни Compose, окна, tray и
+ * контроллера. Закрытие окна скрывает или сворачивает интерфейс, тогда как полное
+ * освобождение ресурсов происходит только при завершении `application`.
+ */
 fun main() = application {
     val traySupported = remember { SystemTray.isSupported() }
     var windowVisible by remember { mutableStateOf(true) }
+    // Счётчик представляет событие «показать», поэтому повторный запрос с true всё равно активирует эффект фокуса.
     var showRequest by remember { mutableIntStateOf(0) }
     val windowState = rememberWindowState(width = 1280.dp, height = 860.dp)
+    // На macOS системная команда Quit перехватывается только при наличии tray, чтобы оставить агент работающим.
     val macQuitDesktop = remember(traySupported) {
         runCatching {
             if (
@@ -38,6 +45,7 @@ fun main() = application {
             }
         }.getOrNull()
     }
+    // Один граф сервисов живёт столько же, сколько корневая композиция application.
     val controller = remember {
         val store = SettingsStore()
         val mailClient = ImapMailClient()
@@ -50,13 +58,16 @@ fun main() = application {
     }
 
     DisposableEffect(controller) {
+        // Явный выход удаляет композицию и через этот callback последовательно закрывает фоновые ресурсы.
         onDispose(controller::close)
     }
 
     DisposableEffect(macQuitDesktop) {
+        // Нативный Quit превращается в скрытие окна; фактический выход остаётся пунктом меню tray.
         val handlerInstalled = runCatching {
             macQuitDesktop?.setQuitHandler { _, response ->
                 response.cancelQuit()
+                // Изменение Compose-state откладывается на AWT event queue, обслуживающую desktop UI.
                 EventQueue.invokeLater {
                     windowVisible = false
                 }
@@ -65,12 +76,14 @@ fun main() = application {
         }.getOrDefault(false)
 
         onDispose {
+            // Обработчик снимается до уничтожения приложения, чтобы Desktop не удерживал Compose-state.
             if (handlerInstalled) {
                 runCatching { macQuitDesktop?.setQuitHandler(null) }
             }
         }
     }
 
+    // Восстанавливает окно из обоих состояний и отдельно сигнализирует о необходимости поднять его наверх.
     val showWindow = {
         windowVisible = true
         windowState.isMinimized = false
@@ -93,6 +106,7 @@ fun main() = application {
 
     Window(
         onCloseRequest = {
+            // Пока процесс доступен через tray, окно можно скрыть; без tray оно остаётся доступным в панели задач.
             if (traySupported) {
                 windowVisible = false
             } else {
@@ -111,6 +125,7 @@ fun main() = application {
             }
         }
         LaunchedEffect(showRequest) {
+            // Фокус запрашивается после применения Compose-состояния видимости, когда нативное окно уже показано.
             if (windowVisible) {
                 window.toFront()
                 window.requestFocus()

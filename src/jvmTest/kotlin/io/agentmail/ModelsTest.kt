@@ -4,6 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
+/** Проверяет провайдер-зависимые правила полноты и миграции конфигурации. */
 class ModelsTest {
     @Test
     fun `ollama does not require llm api key`() {

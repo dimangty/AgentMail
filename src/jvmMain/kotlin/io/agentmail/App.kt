@@ -63,11 +63,20 @@ private val Warm = Color(0xFFFFC36A)
 private val Danger = Color(0xFFFF7D8D)
 private val Muted = Color(0xFF93A4BD)
 
-/** Корневой экран настройки, запуска и наблюдения за почтовым агентом. */
+/**
+ * Корневой экран настройки, запуска и наблюдения за почтовым агентом.
+ *
+ * [AppController.state] содержит последнюю сохранённую конфигурацию и состояние
+ * операций, а редактируемая форма намеренно хранится локально в композиции. Поэтому
+ * ввод пользователя не публикуется как глобальное состояние до сохранения. Значения
+ * секретов также остаются только в локальных полях и не входят в `ControllerState`;
+ * контроллер сообщает наружу лишь факт наличия сохранённых секретов.
+ */
 @Composable
 fun AgentMailApp(controller: AppController) {
     val controllerState by controller.state.collectAsState()
     val monitor by controller.snapshot.collectAsState()
+    // Это черновик формы, отделённый от ControllerState до явного сохранения пользователем.
     var settings by remember { mutableStateOf(controllerState.settings) }
     var mailPassword by remember { mutableStateOf("") }
     var llmApiKey by remember { mutableStateOf("") }
@@ -76,17 +85,21 @@ fun AgentMailApp(controller: AppController) {
         (!controllerState.ollamaModelsLoading &&
             controllerState.ollamaModelsError == null &&
             settings.hasAvailableOllamaModel(controllerState.ollamaModels))
+    // Панель оценивает сохранённые секреты применительно к провайдеру, выбранному в локальном черновике.
     val hasRequiredSecrets = controllerState.hasMailAndTelegramSecrets &&
         (settings.llmProvider != LlmProviderType.CUSTOM || controllerState.hasCustomApiKey)
 
+    // Успешное сохранение или внешняя загрузка становится новой базой формы, не реагируя на прочие поля state.
     LaunchedEffect(controllerState.settings) {
         settings = controllerState.settings
     }
 
+    // Сетевой запрос запускается как побочный эффект смены режима, а не при каждой рекомпозиции.
     LaunchedEffect(settings.llmProvider) {
         if (settings.llmProvider == LlmProviderType.OLLAMA) controller.refreshOllamaModels()
     }
 
+    // Автовыбор помогает только пустой форме и никогда не заменяет уже сделанный пользователем выбор.
     LaunchedEffect(controllerState.ollamaModels, settings.llmProvider) {
         if (
             settings.llmProvider == LlmProviderType.OLLAMA &&
@@ -510,7 +523,11 @@ private fun Metric(label: String, value: String, color: Color = Color.White) {
     }
 }
 
-/** Пустая форма означает, что ранее сохранённые секреты менять не нужно. */
+/**
+ * Преобразует локальные секретные поля в контракт контроллера: полностью пустая
+ * форма даёт `null` и сохраняет keyring без изменений, а непустой объект позволяет
+ * [AppController] дополнить отдельные пустые поля ранее сохранёнными значениями.
+ */
 private fun enteredSecrets(mail: String, llm: String, telegram: String): Secrets? =
     if (mail.isBlank() && llm.isBlank() && telegram.isBlank()) null else Secrets(mail, llm, telegram)
 
