@@ -36,7 +36,7 @@ class TelegramClient internal constructor(private val http: HttpClient) : AutoCl
         }
     }
 
-    /** Проверяет токен через `getMe` и отправляет тестовое сообщение в указанный чат. */
+    /** Проверяет токен через `getMe` и отправляет тестовое сообщение в указанный чат.  */
     suspend fun test(token: String, chatId: String) {
         val response = http.get(endpoint(token, "getMe"))
         if (!response.status.isSuccess()) {
