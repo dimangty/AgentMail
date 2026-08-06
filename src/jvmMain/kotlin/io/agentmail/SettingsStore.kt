@@ -22,11 +22,8 @@ class SettingsStore : AutoCloseable {
         folder = preferences.get("folder", "INBOX"),
         tag = preferences.get("tag", ""),
         pollIntervalMinutes = preferences.getInt("pollInterval", 2),
-        llmProvider = runCatching {
-            LlmProviderType.valueOf(preferences.get("llmProvider", LlmProviderType.QWEN.name))
-        }.getOrDefault(LlmProviderType.QWEN),
-        qwenRegion = preferences.get("qwenRegion", "International"),
-        qwenModel = preferences.get("qwenModel", "qwen-plus"),
+        llmProvider = storedLlmProvider(preferences.get("llmProvider", LlmProviderType.OLLAMA.name)),
+        ollamaModel = preferences.get("ollamaModel", ""),
         customBaseUrl = preferences.get("customBaseUrl", ""),
         customChatPath = preferences.get("customChatPath", "v1/chat/completions"),
         customModel = preferences.get("customModel", ""),
@@ -44,29 +41,29 @@ class SettingsStore : AutoCloseable {
         preferences.put("tag", settings.tag.trim())
         preferences.putInt("pollInterval", settings.pollIntervalMinutes)
         preferences.put("llmProvider", settings.llmProvider.name)
-        preferences.put("qwenRegion", settings.qwenRegion)
-        preferences.put("qwenModel", settings.qwenModel.trim())
+        preferences.put("ollamaModel", settings.ollamaModel.trim())
+        preferences.remove("qwenRegion")
+        preferences.remove("qwenModel")
         preferences.put("customBaseUrl", settings.customBaseUrl.trim().trimEnd('/'))
         preferences.put("customChatPath", settings.customChatPath.trim().trimStart('/'))
         preferences.put("customModel", settings.customModel.trim())
         preferences.put("telegramChatId", settings.telegramChatId.trim())
         secrets?.let {
             keyring.setPassword(SERVICE, MAIL_PASSWORD, it.mailPassword)
-            keyring.setPassword(SERVICE, LLM_API_KEY, it.llmApiKey)
             keyring.setPassword(SERVICE, TELEGRAM_TOKEN, it.telegramBotToken)
+            if (it.llmApiKey.isNotBlank()) keyring.setPassword(SERVICE, LLM_API_KEY, it.llmApiKey)
         }
         preferences.flush()
     }
 
-    /** Возвращает только полный комплект секретов или `null`, если хотя бы один отсутствует. */
-    fun loadSecrets(): Secrets? = runCatching {
-        Secrets(
-            mailPassword = keyring.getPassword(SERVICE, MAIL_PASSWORD),
-            llmApiKey = keyring.getPassword(SERVICE, LLM_API_KEY),
-            telegramBotToken = keyring.getPassword(SERVICE, TELEGRAM_TOKEN),
+    /** Возвращает секреты, если сохранены обязательные для всех режимов почта и Telegram. */
+    fun loadSecrets(): Secrets? {
+        val secrets = Secrets(
+            mailPassword = password(MAIL_PASSWORD),
+            llmApiKey = password(LLM_API_KEY),
+            telegramBotToken = password(TELEGRAM_TOKEN),
         )
-    }.getOrNull()?.takeIf {
-        it.mailPassword.isNotBlank() && it.llmApiKey.isNotBlank() && it.telegramBotToken.isNotBlank()
+        return secrets.takeIf { it.mailPassword.isNotBlank() && it.telegramBotToken.isNotBlank() }
     }
 
     /** Загружает позицию последнего опроса для конкретного почтового аккаунта. */
@@ -104,6 +101,9 @@ class SettingsStore : AutoCloseable {
 
     override fun close() = keyring.close()
 
+    private fun password(key: String): String = runCatching { keyring.getPassword(SERVICE, key).orEmpty() }
+        .getOrDefault("")
+
     // Короткий хеш не включает исходный account key в имя Preferences, но не является шифрованием.
     private fun String.preferenceKey(): String = MessageDigest.getInstance("SHA-256")
         .digest(toByteArray())
@@ -117,6 +117,10 @@ class SettingsStore : AutoCloseable {
         const val TELEGRAM_TOKEN = "telegram-bot-token"
     }
 }
+
+/** Старый Qwen-профиль однократно переводится на локальный режим при следующем сохранении. */
+internal fun storedLlmProvider(value: String): LlmProviderType =
+    if (value == LlmProviderType.CUSTOM.name) LlmProviderType.CUSTOM else LlmProviderType.OLLAMA
 
 /**
  * Позиция IMAP-опроса. [lastUid] имеет смысл только для указанного [uidValidity],

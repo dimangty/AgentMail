@@ -12,7 +12,11 @@ import kotlinx.coroutines.launch
 /** Состояние формы настроек и выполняемой из UI операции. */
 data class ControllerState(
     val settings: AppSettings = AppSettings(),
-    val hasSecrets: Boolean = false,
+    val hasMailAndTelegramSecrets: Boolean = false,
+    val hasCustomApiKey: Boolean = false,
+    val ollamaModels: List<String> = emptyList(),
+    val ollamaModelsLoading: Boolean = false,
+    val ollamaModelsError: String? = null,
     val busy: Boolean = false,
     val notice: String? = null,
     val noticeIsError: Boolean = false,
@@ -28,11 +32,17 @@ class AppController(
     private val summarizer: KoogSummarizer,
     private val telegram: TelegramClient,
     private val monitoring: MonitoringService,
+    private val ollamaModels: OllamaModelsClient,
 ) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private val mutableState = MutableStateFlow(
-        ControllerState(settings = store.load(), hasSecrets = store.loadSecrets() != null)
-    )
+    private val mutableState = MutableStateFlow(store.load().let { settings ->
+        val secrets = store.loadSecrets()
+        ControllerState(
+            settings = settings,
+            hasMailAndTelegramSecrets = secrets != null,
+            hasCustomApiKey = !secrets?.llmApiKey.isNullOrBlank(),
+        )
+    })
     val state: StateFlow<ControllerState> = mutableState.asStateFlow()
     val snapshot: StateFlow<MonitorSnapshot> = monitoring.snapshot
 
@@ -47,14 +57,22 @@ class AppController(
     fun save(settings: AppSettings, enteredSecrets: Secrets?): Boolean = runCatching {
         val normalized = settings.normalized()
         val resolvedSecrets = resolveSecrets(enteredSecrets)
-        if (enteredSecrets != null && resolvedSecrets == null) {
-            error("Для первого сохранения заполните все три секрета")
+        if (enteredSecrets != null && !resolvedSecrets.isCompleteFor(normalized)) {
+            error(
+                if (normalized.llmProvider == LlmProviderType.OLLAMA) {
+                    "Для первого сохранения заполните пароль почты и Telegram token"
+                } else {
+                    "Для первого сохранения заполните пароль почты, API key и Telegram token"
+                }
+            )
         }
         store.save(normalized, resolvedSecrets.takeIf { enteredSecrets != null })
         monitoring.loadHistory(normalized, resolvedSecrets?.telegramBotToken)
+        val savedSecrets = store.loadSecrets()
         mutableState.value = mutableState.value.copy(
             settings = normalized,
-            hasSecrets = store.loadSecrets() != null,
+            hasMailAndTelegramSecrets = savedSecrets != null,
+            hasCustomApiKey = !savedSecrets?.llmApiKey.isNullOrBlank(),
             notice = "Настройки сохранены в системном хранилище",
             noticeIsError = false,
         )
@@ -69,7 +87,7 @@ class AppController(
         if (snapshot.value.status == MonitorStatus.RUNNING) return
         val normalized = settings.normalized()
         val secrets = resolveSecrets(enteredSecrets)
-        val errors = normalized.validationErrors(secrets != null)
+        val errors = connectionErrors(normalized, secrets)
         if (errors.isNotEmpty()) {
             showError(errors.joinToString(". "))
             return
@@ -91,7 +109,7 @@ class AppController(
     fun testConnections(settings: AppSettings, enteredSecrets: Secrets?) {
         val normalized = settings.normalized()
         val secrets = resolveSecrets(enteredSecrets)
-        val errors = normalized.validationErrors(secrets != null)
+        val errors = connectionErrors(normalized, secrets)
         if (errors.isNotEmpty()) {
             showError(errors.joinToString(". "))
             return
@@ -118,6 +136,46 @@ class AppController(
         }
     }
 
+    /** Асинхронно обновляет список локально установленных completion-моделей Ollama. */
+    fun refreshOllamaModels() {
+        if (mutableState.value.ollamaModelsLoading) return
+        mutableState.value = mutableState.value.copy(ollamaModelsLoading = true, ollamaModelsError = null)
+        scope.launch {
+            runCatching { ollamaModels.availableModels() }
+                .onSuccess { models ->
+                    mutableState.value = mutableState.value.copy(
+                        ollamaModels = models,
+                        ollamaModelsLoading = false,
+                        ollamaModelsError = if (models.isEmpty()) "В Ollama нет локальных chat-моделей" else null,
+                    )
+                }
+                .onFailure { error ->
+                    mutableState.value = mutableState.value.copy(
+                        ollamaModels = emptyList(),
+                        ollamaModelsLoading = false,
+                        ollamaModelsError = "Не удалось получить модели Ollama: ${redact(error.message.orEmpty())}",
+                    )
+                }
+        }
+    }
+
+    private fun connectionErrors(settings: AppSettings, secrets: Secrets?): List<String> = buildList {
+        addAll(settings.validationErrors(secrets))
+        if (
+            settings.llmProvider == LlmProviderType.OLLAMA &&
+            settings.ollamaModel.isNotBlank() &&
+            !settings.hasAvailableOllamaModel(mutableState.value.ollamaModels)
+        ) {
+            add(
+                when {
+                    mutableState.value.ollamaModelsLoading -> "Дождитесь загрузки моделей Ollama"
+                    mutableState.value.ollamaModelsError != null -> mutableState.value.ollamaModelsError.orEmpty()
+                    else -> "Выберите модель из актуального списка Ollama"
+                }
+            )
+        }
+    }
+
     private fun showError(message: String) {
         mutableState.value = mutableState.value.copy(
             busy = false,
@@ -138,16 +196,14 @@ class AppController(
             mailPassword = entered.mailPassword.ifBlank { saved?.mailPassword.orEmpty() },
             llmApiKey = entered.llmApiKey.ifBlank { saved?.llmApiKey.orEmpty() },
             telegramBotToken = entered.telegramBotToken.ifBlank { saved?.telegramBotToken.orEmpty() },
-        ).takeIf(Secrets::isComplete)
+        )
     }
 
     override fun close() {
         scope.cancel()
         monitoring.close()
+        ollamaModels.close()
         telegram.close()
         store.close()
     }
 }
-
-private fun Secrets.isComplete(): Boolean =
-    mailPassword.isNotBlank() && llmApiKey.isNotBlank() && telegramBotToken.isNotBlank()

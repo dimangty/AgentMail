@@ -3,15 +3,13 @@ package io.agentmail
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.clients.ConnectionTimeoutConfig
 import ai.koog.prompt.executor.clients.LLMClient
-import ai.koog.prompt.executor.clients.dashscope.DashscopeClientSettings
-import ai.koog.prompt.executor.clients.dashscope.DashscopeLLMClient
-import ai.koog.prompt.executor.clients.dashscope.DashscopeModels
 import ai.koog.prompt.executor.clients.openai.OpenAIClientSettings
 import ai.koog.prompt.executor.clients.openai.OpenAILLMClient
 import ai.koog.prompt.llm.LLMCapability
 import ai.koog.prompt.llm.LLMProvider
 import ai.koog.prompt.llm.LLModel
 import ai.koog.prompt.params.LLMParams
+import kotlinx.serialization.json.JsonPrimitive
 
 /** Создаёт Koog-клиент выбранного провайдера и получает краткое содержание письма. */
 class KoogSummarizer {
@@ -25,7 +23,7 @@ class KoogSummarizer {
             val response = it.execute(
                 prompt = prompt(
                     id = "mail-mention-summary",
-                    params = LLMParams(temperature = 0.1, maxTokens = 300),
+                    params = promptParams(settings),
                 ) {
                     // Письмо считается недоверенными данными и не должно переопределять системную задачу.
                     system(
@@ -59,56 +57,54 @@ class KoogSummarizer {
     suspend fun test(settings: AppSettings, apiKey: String) {
         val (client, model) = createClient(settings, apiKey)
         client.use {
-            it.execute(prompt("connection-test") { user("Ответь одним словом: OK") }, model)
+            it.execute(
+                prompt(id = "connection-test", params = promptParams(settings)) {
+                    user("Ответь одним словом: OK")
+                },
+                model,
+            )
         }
     }
+
+    private fun promptParams(settings: AppSettings): LLMParams =
+        if (settings.llmProvider == LlmProviderType.OLLAMA) {
+            // Ollama 0.x игнорирует отправляемое Koog поле max_completion_tokens.
+            LLMParams(
+                temperature = 0.1,
+                additionalProperties = mapOf("max_tokens" to JsonPrimitive(300)),
+            )
+        } else {
+            LLMParams(temperature = 0.1, maxTokens = 300)
+        }
 
     private fun createClient(settings: AppSettings, apiKey: String): Pair<LLMClient, LLModel> {
+        val ollama = settings.llmProvider == LlmProviderType.OLLAMA
         val timeout = ConnectionTimeoutConfig(
-            requestTimeoutMillis = 45_000,
-            connectTimeoutMillis = 15_000,
-            socketTimeoutMillis = 45_000,
+            requestTimeoutMillis = if (ollama) 180_000 else 45_000,
+            connectTimeoutMillis = if (ollama) 5_000 else 15_000,
+            socketTimeoutMillis = if (ollama) 180_000 else 45_000,
         )
-        return when (settings.llmProvider) {
-            LlmProviderType.QWEN -> {
-                val baseUrl = if (settings.qwenRegion == "China") {
-                    "https://dashscope.aliyuncs.com/"
-                } else {
-                    "https://dashscope-intl.aliyuncs.com/"
-                }
-                val client = DashscopeLLMClient(
-                    apiKey = apiKey,
-                    settings = DashscopeClientSettings(baseUrl = baseUrl, timeoutConfig = timeout),
-                )
-                client to qwenModel(settings.qwenModel)
-            }
-
-            LlmProviderType.CUSTOM -> {
-                val client = OpenAILLMClient(
-                    apiKey = apiKey,
-                    settings = OpenAIClientSettings(
-                        baseUrl = settings.customBaseUrl,
-                        chatCompletionsPath = settings.customChatPath,
-                        timeoutConfig = timeout,
-                    ),
-                )
-                client to LLModel(
-                    provider = LLMProvider.OpenAI,
-                    id = settings.customModel,
-                    capabilities = listOf(
-                        LLMCapability.Completion,
-                        LLMCapability.Temperature,
-                        LLMCapability.OpenAIEndpoint.Completions,
-                    ),
-                )
-            }
-        }
+        val client = OpenAILLMClient(
+            apiKey = if (ollama) "ollama" else apiKey,
+            settings = OpenAIClientSettings(
+                baseUrl = if (ollama) OLLAMA_BASE_URL else settings.customBaseUrl,
+                chatCompletionsPath = if (ollama) OLLAMA_CHAT_PATH else settings.customChatPath,
+                timeoutConfig = timeout,
+            ),
+        )
+        return client to LLModel(
+            provider = LLMProvider.OpenAI,
+            id = if (ollama) settings.ollamaModel else settings.customModel,
+            capabilities = listOf(
+                LLMCapability.Completion,
+                LLMCapability.Temperature,
+                LLMCapability.OpenAIEndpoint.Completions,
+            ),
+        )
     }
 
-    private fun qwenModel(id: String): LLModel = when (id) {
-        DashscopeModels.QWEN_FLASH.id -> DashscopeModels.QWEN_FLASH
-        DashscopeModels.QWEN_PLUS_LATEST.id -> DashscopeModels.QWEN_PLUS_LATEST
-        // Неизвестное сохранённое значение безопасно откатывается к базовой модели.
-        else -> DashscopeModels.QWEN_PLUS
+    private companion object {
+        const val OLLAMA_BASE_URL = "http://localhost:11434"
+        const val OLLAMA_CHAT_PATH = "v1/chat/completions"
     }
 }

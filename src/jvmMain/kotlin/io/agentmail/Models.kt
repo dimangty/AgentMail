@@ -2,7 +2,7 @@ package io.agentmail
 
 import java.time.Instant
 
-enum class LlmProviderType { QWEN, CUSTOM }
+enum class LlmProviderType { OLLAMA, CUSTOM }
 
 enum class MonitorStatus { STOPPED, STARTING, RUNNING, STOPPING, ERROR }
 
@@ -16,9 +16,8 @@ data class AppSettings(
     val folder: String = "INBOX",
     val tag: String = "",
     val pollIntervalMinutes: Int = 2,
-    val llmProvider: LlmProviderType = LlmProviderType.QWEN,
-    val qwenRegion: String = "International",
-    val qwenModel: String = "qwen-plus",
+    val llmProvider: LlmProviderType = LlmProviderType.OLLAMA,
+    val ollamaModel: String = "",
     val customBaseUrl: String = "",
     val customChatPath: String = "v1/chat/completions",
     val customModel: String = "",
@@ -77,7 +76,7 @@ fun AppSettings.normalized(): AppSettings = copy(
     imapHost = imapHost.trim(),
     folder = folder.trim(),
     tag = tag.trim(),
-    qwenModel = qwenModel.trim(),
+    ollamaModel = ollamaModel.trim(),
     customBaseUrl = customBaseUrl.trim().trimEnd('/'),
     customChatPath = customChatPath.trim().trimStart('/'),
     customModel = customModel.trim(),
@@ -85,17 +84,33 @@ fun AppSettings.normalized(): AppSettings = copy(
 )
 
 /** Возвращает готовые для UI сообщения обо всех найденных ошибках конфигурации. */
-fun AppSettings.validationErrors(secretsAvailable: Boolean): List<String> = buildList {
+fun AppSettings.validationErrors(secrets: Secrets?): List<String> = buildList {
     if (!email.contains('@')) add("Укажите корпоративный email")
     if (imapUsername.isBlank()) add("Укажите логин почты")
     if (imapHost.isBlank()) add("Укажите IMAP host")
     if (imapPort !in 1..65535) add("IMAP port должен быть от 1 до 65535")
     if (!tag.startsWith('@') || tag.length < 3) add("Тег должен начинаться с @")
     if (pollIntervalMinutes !in 1..1440) add("Интервал должен быть от 1 до 1440 минут")
-    if (llmProvider == LlmProviderType.CUSTOM) {
-        if (!customBaseUrl.startsWith("https://")) add("Base URL корпоративной модели должен использовать HTTPS")
-        if (customModel.isBlank()) add("Укажите ID корпоративной модели")
+    when (llmProvider) {
+        LlmProviderType.OLLAMA -> if (ollamaModel.isBlank()) add("Выберите установленную модель Ollama")
+        LlmProviderType.CUSTOM -> {
+            if (!customBaseUrl.startsWith("https://")) add("Base URL корпоративной модели должен использовать HTTPS")
+            if (customModel.isBlank()) add("Укажите ID корпоративной модели")
+        }
     }
     if (telegramChatId.isBlank()) add("Укажите Telegram chat ID")
-    if (!secretsAvailable) add("Сохраните пароли и API-токены")
+    if (secrets?.mailPassword.isNullOrBlank()) add("Сохраните пароль почты")
+    if (secrets?.telegramBotToken.isNullOrBlank()) add("Сохраните Telegram bot token")
+    if (llmProvider == LlmProviderType.CUSTOM && secrets?.llmApiKey.isNullOrBlank()) {
+        add("Сохраните API key корпоративной модели")
+    }
 }
+
+/** Проверяет комплект секретов с учётом выбранного поставщика модели. */
+fun Secrets?.isCompleteFor(settings: AppSettings): Boolean =
+    this != null && mailPassword.isNotBlank() && telegramBotToken.isNotBlank() &&
+        (settings.llmProvider != LlmProviderType.CUSTOM || llmApiKey.isNotBlank())
+
+/** Проверяет, что Ollama-модель подтверждена актуальным локальным каталогом. */
+fun AppSettings.hasAvailableOllamaModel(models: List<String>): Boolean =
+    llmProvider != LlmProviderType.OLLAMA || ollamaModel in models

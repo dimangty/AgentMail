@@ -2,14 +2,24 @@
 
 Desktop-агент на Compose Multiplatform и JetBrains Koog. Он проверяет корпоративный IMAP-ящик,
 локально находит точный тег пользователя (например, `@dmitry.bykov`), кратко пересказывает найденное
-письмо через Qwen или корпоративный OpenAI-compatible endpoint и отправляет уведомление в Telegram.
+письмо через локальную Ollama или корпоративный OpenAI-compatible endpoint и отправляет уведомление в Telegram.
 
 ## Требования
 
 - JDK 17+
 - IMAP-доступ к корпоративной почте (пароль или app password)
 - Telegram bot token и chat ID
-- DashScope API key либо корпоративный Base URL, model ID и API key
+- [Ollama](https://ollama.com/) с установленной chat-моделью либо корпоративный Base URL, model ID и API key
+
+Для локальной обработки запустите Ollama и установите модель, например:
+
+```bash
+ollama pull qwen3:8b
+ollama serve
+```
+
+AgentMail подключается только к `http://localhost:11434`, получает список локальных моделей через
+Ollama API и не требует API key. Cloud-модели и embedding-модели в список выбора не включаются.
 
 ## Запуск
 
@@ -25,7 +35,7 @@ Desktop-агент на Compose Multiplatform и JetBrains Koog. Он прове
 
 ## Безопасность и поведение
 
-- Пароль почты, LLM API key и Telegram token сохраняются в системном keyring, а не в Preferences.
+- Пароль почты, корпоративный LLM API key и Telegram token сохраняются в системном keyring, а не в Preferences.
 - IMAP открывается в `READ_ONLY`; флаг `SEEN` не меняется.
 - При первом запуске агент начинает с конца ящика и не пересылает историю.
 - До модели доходит только письмо с точным совпадением тега; вложения не читаются.
@@ -33,10 +43,12 @@ Desktop-агент на Compose Multiplatform и JetBrains Koog. Он прове
 - История Telegram хранится локально в SQLite; повторно найденное письмо автоматически не отправляется.
 - Неопределённый результат доставки блокирует автоповтор, чтобы не создавать дубли.
 - Мониторинг работает только пока приложение запущено и компьютер не находится в режиме сна.
-- Перед использованием внешнего Qwen и Telegram согласуйте передачу корпоративных данных с политиками компании.
+- В режиме Ollama письмо не отправляется внешнему LLM, но уведомление всё равно передаётся в Telegram.
+- Перед использованием корпоративной модели и Telegram согласуйте передачу данных с политиками компании.
 
-Qwen интегрирован официальным `DashscopeLLMClient` Koog. Корпоративная модель использует
-`OpenAILLMClient` Koog с настраиваемыми Base URL, chat completions path и model ID.
+Ollama и корпоративная модель используют `OpenAILLMClient` Koog. Для Ollama заданы локальный Base URL
+и стандартный `v1/chat/completions`; корпоративный режим сохраняет настраиваемые HTTPS Base URL,
+chat completions path и model ID.
 
 Для Google Workspace используйте пресет в интерфейсе: `imap.gmail.com`, порт `993`, IMAPS и `INBOX`.
 Обычно логином является полный корпоративный email. При включённой двухфакторной аутентификации нужен

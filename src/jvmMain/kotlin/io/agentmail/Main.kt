@@ -12,9 +12,10 @@ fun main() = application {
         val mailClient = ImapMailClient()
         val summarizer = KoogSummarizer()
         val telegram = TelegramClient()
+        val ollamaModels = OllamaModelsClient()
         val history = DeliveryHistoryStore()
         val monitoring = MonitoringService(store, mailClient, summarizer, telegram, history)
-        AppController(store, mailClient, summarizer, telegram, monitoring)
+        AppController(store, mailClient, summarizer, telegram, monitoring, ollamaModels)
     }
 
     Window(

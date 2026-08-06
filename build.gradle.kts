@@ -26,10 +26,11 @@ kotlin {
         jvmMain.dependencies {
             implementation(compose.desktop.currentOs)
             implementation("ai.koog:prompt-executor-openai-client:1.1.1")
-            implementation("ai.koog:prompt-executor-dashscope-client:1.1.1-beta")
+            implementation("ai.koog:http-client-ktor:1.1.1")
             implementation("io.ktor:ktor-client-cio:3.3.3")
             implementation("io.ktor:ktor-client-content-negotiation:3.3.3")
             implementation("io.ktor:ktor-serialization-kotlinx-json:3.3.3")
+            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.10.2")
             implementation("jakarta.mail:jakarta.mail-api:2.1.5")
             implementation("org.eclipse.angus:angus-mail:2.0.5")
             implementation("org.jsoup:jsoup:1.23.1")

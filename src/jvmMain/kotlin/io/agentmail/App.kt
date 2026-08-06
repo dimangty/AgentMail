@@ -72,9 +72,29 @@ fun AgentMailApp(controller: AppController) {
     var mailPassword by remember { mutableStateOf("") }
     var llmApiKey by remember { mutableStateOf("") }
     var telegramToken by remember { mutableStateOf("") }
+    val llmReady = settings.llmProvider != LlmProviderType.OLLAMA ||
+        (!controllerState.ollamaModelsLoading &&
+            controllerState.ollamaModelsError == null &&
+            settings.hasAvailableOllamaModel(controllerState.ollamaModels))
+    val hasRequiredSecrets = controllerState.hasMailAndTelegramSecrets &&
+        (settings.llmProvider != LlmProviderType.CUSTOM || controllerState.hasCustomApiKey)
 
     LaunchedEffect(controllerState.settings) {
         settings = controllerState.settings
+    }
+
+    LaunchedEffect(settings.llmProvider) {
+        if (settings.llmProvider == LlmProviderType.OLLAMA) controller.refreshOllamaModels()
+    }
+
+    LaunchedEffect(controllerState.ollamaModels, settings.llmProvider) {
+        if (
+            settings.llmProvider == LlmProviderType.OLLAMA &&
+            settings.ollamaModel.isBlank() &&
+            controllerState.ollamaModels.isNotEmpty()
+        ) {
+            settings = settings.copy(ollamaModel = controllerState.ollamaModels.first())
+        }
     }
 
     MaterialTheme(
@@ -178,9 +198,9 @@ fun AgentMailApp(controller: AppController) {
                 SettingsCard("03", "Модель через Koog") {
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         FilterChip(
-                            selected = settings.llmProvider == LlmProviderType.QWEN,
-                            onClick = { settings = settings.copy(llmProvider = LlmProviderType.QWEN) },
-                            label = { Text("Qwen / DashScope") },
+                            selected = settings.llmProvider == LlmProviderType.OLLAMA,
+                            onClick = { settings = settings.copy(llmProvider = LlmProviderType.OLLAMA) },
+                            label = { Text("Локальная Ollama") },
                         )
                         FilterChip(
                             selected = settings.llmProvider == LlmProviderType.CUSTOM,
@@ -188,20 +208,30 @@ fun AgentMailApp(controller: AppController) {
                             label = { Text("Корпоративная") },
                         )
                     }
-                    if (settings.llmProvider == LlmProviderType.QWEN) {
-                        FormRow {
-                            ChoiceField(
-                                label = "Регион",
-                                options = listOf("International", "China"),
-                                selected = settings.qwenRegion,
-                                onSelect = { settings = settings.copy(qwenRegion = it) },
-                            )
-                            ChoiceField(
-                                label = "Модель",
-                                options = listOf("qwen-plus", "qwen-plus-latest", "qwen-flash"),
-                                selected = settings.qwenModel,
-                                onSelect = { settings = settings.copy(qwenModel = it) },
-                            )
+                    if (settings.llmProvider == LlmProviderType.OLLAMA) {
+                        Text("Ollama работает локально на http://localhost:11434", color = Muted, fontSize = 13.sp)
+                        ModelSelector(
+                            options = controllerState.ollamaModels,
+                            selected = settings.ollamaModel,
+                            onSelect = { settings = settings.copy(ollamaModel = it) },
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedButton(
+                                onClick = controller::refreshOllamaModels,
+                                enabled = !controllerState.ollamaModelsLoading,
+                            ) { Text("Обновить список") }
+                            if (controllerState.ollamaModelsLoading) {
+                                Spacer(Modifier.width(10.dp))
+                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            }
+                        }
+                        controllerState.ollamaModelsError?.let { Notice(it, true) }
+                        if (
+                            settings.ollamaModel.isNotBlank() &&
+                            controllerState.ollamaModels.isNotEmpty() &&
+                            settings.ollamaModel !in controllerState.ollamaModels
+                        ) {
+                            Notice("Выбранная модель больше не установлена в Ollama", true)
                         }
                     } else {
                         Field(
@@ -224,8 +254,8 @@ fun AgentMailApp(controller: AppController) {
                                 "company-chat",
                             )
                         }
+                        SecretField("API Key", llmApiKey) { llmApiKey = it }
                     }
-                    SecretField("API Key", llmApiKey) { llmApiKey = it }
                 }
 
                 SettingsCard("04", "Доставка в Telegram") {
@@ -250,7 +280,7 @@ fun AgentMailApp(controller: AppController) {
                         onClick = {
                             controller.testConnections(settings, enteredSecrets(mailPassword, llmApiKey, telegramToken))
                         },
-                        enabled = !controllerState.busy && monitor.status != MonitorStatus.RUNNING,
+                        enabled = !controllerState.busy && monitor.status != MonitorStatus.RUNNING && llmReady,
                     ) {
                         if (controllerState.busy) {
                             CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -277,12 +307,12 @@ fun AgentMailApp(controller: AppController) {
                     } else {
                         Button(onClick = {
                             controller.start(settings, enteredSecrets(mailPassword, llmApiKey, telegramToken))
-                        }) { Text("Запустить агента") }
+                        }, enabled = llmReady) { Text("Запустить агента") }
                     }
                 }
                 Spacer(Modifier.height(20.dp))
             }
-            StatusPanel(monitor, controllerState.hasSecrets)
+            StatusPanel(monitor, hasRequiredSecrets)
         }
     }
 }
@@ -442,13 +472,18 @@ private fun SecretField(label: String, value: String, onChange: (String) -> Unit
 }
 
 @Composable
-private fun RowScope.ChoiceField(label: String, options: List<String>, selected: String, onSelect: (String) -> Unit) {
-    Column(Modifier.weight(1f)) {
-        Text(label, color = Muted, fontSize = 12.sp)
-        Spacer(Modifier.height(7.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+private fun ModelSelector(options: List<String>, selected: String, onSelect: (String) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("Установленная модель", color = Muted, fontSize = 12.sp)
+        if (options.isEmpty()) {
+            Text("Запустите Ollama и установите chat-модель", color = Muted, fontSize = 13.sp)
+        } else {
             options.forEach { option ->
-                FilterChip(selected = selected == option, onClick = { onSelect(option) }, label = { Text(option) })
+                FilterChip(
+                    selected = selected == option,
+                    onClick = { onSelect(option) },
+                    label = { Text(option) },
+                )
             }
         }
     }
