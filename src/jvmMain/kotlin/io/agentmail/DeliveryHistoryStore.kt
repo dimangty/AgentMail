@@ -231,6 +231,7 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
          * данных: Application Support на macOS, APPDATA на Windows и XDG-совместимый
          * каталог на остальных системах. Родительский каталог создаётся конструктором.
          */
+
         fun defaultDatabasePath(): Path {
             val home = System.getProperty("user.home")
             val os = System.getProperty("os.name").lowercase()
