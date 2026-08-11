@@ -7,10 +7,12 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.MenuBar
 import androidx.compose.ui.window.Tray
 import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import io.agentmail.agentmail.generated.resources.Res
@@ -19,6 +21,9 @@ import java.awt.Desktop
 import java.awt.EventQueue
 import java.awt.SystemTray
 import org.jetbrains.compose.resources.painterResource
+import java.awt.Dimension
+
+private val minimumWindowSize = Dimension(1280, 860)
 
 /**
  * Запускает desktop-приложение и связывает время жизни Compose, окна, tray и
@@ -30,7 +35,11 @@ fun main() = application {
     var windowVisible by remember { mutableStateOf(true) }
     // Счётчик представляет событие «показать», поэтому повторный запрос с true всё равно активирует эффект фокуса.
     var showRequest by remember { mutableIntStateOf(0) }
-    val windowState = rememberWindowState(width = 1280.dp, height = 860.dp)
+    val windowState = rememberWindowState(
+        position = WindowPosition.Aligned(Alignment.Center),
+        width = minimumWindowSize.width.dp,
+        height = minimumWindowSize.height.dp
+    )
     // На macOS системная команда Quit перехватывается только при наличии tray, чтобы оставить агент работающим.
     val macQuitDesktop = remember(traySupported) {
         runCatching {
@@ -118,6 +127,8 @@ fun main() = application {
         state = windowState,
         visible = windowVisible,
     ) {
+        window.minimumSize = minimumWindowSize
+        window.rootPane.putClientProperty("apple.awt.windowAppearance", "NSAppearanceNameDarkAqua")
         if (!traySupported) {
             MenuBar {
                 Menu("AgentMail") {
@@ -130,6 +141,9 @@ fun main() = application {
             if (windowVisible) {
                 window.toFront()
                 window.requestFocus()
+                if (System.getProperty("os.name").startsWith("Mac", ignoreCase = true)) {
+                    Desktop.getDesktop().requestForeground(true)
+                }
             }
         }
         AgentMailApp(controller)

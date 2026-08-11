@@ -33,6 +33,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
@@ -125,234 +126,236 @@ fun AgentMailApp(controller: AppController) {
             onSurface = Color(0xFFF3F7FF),
         )
     ) {
-        Row(Modifier.fillMaxSize().background(Ink)) {
-            BrandRail(monitor.status)
-            Column(
-                modifier = Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState())
-                    .padding(horizontal = 34.dp, vertical = 28.dp),
-                verticalArrangement = Arrangement.spacedBy(18.dp),
-            ) {
-                Text("Настройка агента", fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
-                Text(
-                    "Письма остаются локальными до точного совпадения тега. В модель отправляются только найденные упоминания.",
-                    color = Muted,
-                    fontSize = 14.sp,
-                )
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Row(Modifier.fillMaxSize().background(Ink)) {
+                BrandRail(monitor.status)
+                Column(
+                    modifier = Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState())
+                        .padding(horizontal = 34.dp, vertical = 28.dp),
+                    verticalArrangement = Arrangement.spacedBy(18.dp),
+                ) {
+                    Text("Настройка агента", fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Письма остаются локальными до точного совпадения тега. В модель отправляются только найденные упоминания.",
+                        color = Muted,
+                        fontSize = 14.sp,
+                    )
 
-                SettingsCard("01", "Корпоративная почта") {
-                    OutlinedButton(
-                        onClick = {
-                            settings = settings.copy(
-                                imapUsername = settings.imapUsername.ifBlank { settings.email },
-                                imapHost = "imap.gmail.com",
-                                imapPort = 993,
-                                useStartTls = false,
-                                folder = "INBOX",
-                            )
-                        },
-                    ) { Text("Применить Google Workspace") }
-                    FormRow {
-                        Field(
-                            "Email",
-                            settings.email,
-                            { value ->
-                                val previousEmail = settings.email
-                                // Логин следует за email, пока пользователь не изменил его отдельно.
+                    SettingsCard("01", "Корпоративная почта") {
+                        OutlinedButton(
+                            onClick = {
                                 settings = settings.copy(
-                                    email = value,
-                                    imapUsername = if (
-                                        settings.imapUsername.isBlank() || settings.imapUsername == previousEmail
-                                    ) value else settings.imapUsername,
+                                    imapUsername = settings.imapUsername.ifBlank { settings.email },
+                                    imapHost = "imap.gmail.com",
+                                    imapPort = 993,
+                                    useStartTls = false,
+                                    folder = "INBOX",
                                 )
                             },
-                            "name@company.io",
-                        )
-                        Field(
-                            "Логин",
-                            settings.imapUsername,
-                            { settings = settings.copy(imapUsername = it) },
-                            "name@company.io",
-                        )
-                    }
-                    FormRow {
-                        Field("IMAP host", settings.imapHost, { settings = settings.copy(imapHost = it) }, "imap.gmail.com")
-                        Field(
-                            "Port",
-                            settings.imapPort.toString(),
-                            { value -> value.toIntOrNull()?.let { settings = settings.copy(imapPort = it) } },
-                            "993",
-                            keyboardType = KeyboardType.Number,
-                        )
-                    }
-                    Field("Folder", settings.folder, { settings = settings.copy(folder = it) }, "INBOX")
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Switch(
-                            checked = settings.useStartTls,
-                            onCheckedChange = { settings = settings.copy(useStartTls = it) },
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text("STARTTLS вместо IMAPS", color = Muted)
-                    }
-                    SecretField("Пароль или app password", mailPassword) { mailPassword = it }
-                }
-
-                SettingsCard("02", "Правило упоминания") {
-                    FormRow {
-                        Field("Ваш тег", settings.tag, { settings = settings.copy(tag = it) }, "@dmitry.bykov")
-                        Field(
-                            "Проверять каждые, мин",
-                            settings.pollIntervalMinutes.toString(),
-                            { value -> value.toIntOrNull()?.let { settings = settings.copy(pollIntervalMinutes = it) } },
-                            "2",
-                            keyboardType = KeyboardType.Number,
-                        )
-                    }
-                    Text("При первом подключении старые письма не пересылаются.", color = Muted, fontSize = 13.sp)
-                }
-
-                SettingsCard("03", "Модель через Koog") {
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        FilterChip(
-                            selected = settings.llmProvider == LlmProviderType.OLLAMA,
-                            onClick = { settings = settings.copy(llmProvider = LlmProviderType.OLLAMA) },
-                            label = { Text("Локальная Ollama") },
-                        )
-                        FilterChip(
-                            selected = settings.llmProvider == LlmProviderType.CUSTOM,
-                            onClick = { settings = settings.copy(llmProvider = LlmProviderType.CUSTOM) },
-                            label = { Text("Корпоративная") },
-                        )
-                    }
-                    if (settings.llmProvider == LlmProviderType.OLLAMA) {
-                        Text("Ollama работает локально на http://localhost:11434", color = Muted, fontSize = 13.sp)
-                        ModelSelector(
-                            options = controllerState.ollamaModels,
-                            selected = settings.ollamaModel,
-                            onSelect = { settings = settings.copy(ollamaModel = it) },
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            OutlinedButton(
-                                onClick = controller::refreshOllamaModels,
-                                enabled = !controllerState.ollamaModelsLoading,
-                            ) { Text("Обновить список") }
-                            if (controllerState.ollamaModelsLoading) {
-                                Spacer(Modifier.width(10.dp))
-                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                            }
-                        }
-                        controllerState.ollamaModelsError?.let { Notice(it, true) }
-                        if (
-                            settings.ollamaModel.isNotBlank() &&
-                            controllerState.ollamaModels.isNotEmpty() &&
-                            settings.ollamaModel !in controllerState.ollamaModels
-                        ) {
-                            Notice("Выбранная модель больше не установлена в Ollama", true)
-                        }
-                    } else {
-                        Field(
-                            "Base URL",
-                            settings.customBaseUrl,
-                            { settings = settings.copy(customBaseUrl = it) },
-                            "https://llm.company.io",
-                        )
+                        ) { Text("Применить Google Workspace") }
                         FormRow {
                             Field(
-                                "Chat path",
-                                settings.customChatPath,
-                                { settings = settings.copy(customChatPath = it) },
-                                "v1/chat/completions",
+                                "Email",
+                                settings.email,
+                                { value ->
+                                    val previousEmail = settings.email
+                                    // Логин следует за email, пока пользователь не изменил его отдельно.
+                                    settings = settings.copy(
+                                        email = value,
+                                        imapUsername = if (
+                                            settings.imapUsername.isBlank() || settings.imapUsername == previousEmail
+                                        ) value else settings.imapUsername,
+                                    )
+                                },
+                                "name@company.io",
                             )
                             Field(
-                                "Model ID",
-                                settings.customModel,
-                                { settings = settings.copy(customModel = it) },
-                                "company-chat",
+                                "Логин",
+                                settings.imapUsername,
+                                { settings = settings.copy(imapUsername = it) },
+                                "name@company.io",
                             )
                         }
-                        SecretField("API Key", llmApiKey) { llmApiKey = it }
-                    }
-                }
-
-                SettingsCard("04", "Доставка в Telegram") {
-                    Field(
-                        "Chat ID",
-                        settings.telegramChatId,
-                        { settings = settings.copy(telegramChatId = it) },
-                        "123456789 или -100...",
-                    )
-                    SecretField("Bot token", telegramToken) { telegramToken = it }
-                }
-
-                SettingsCard("05", "Автоматизация GitLab") {
-                    Field(
-                        "GitLab Base URL",
-                        settings.gitLabBaseUrl,
-                        { settings = settings.copy(gitLabBaseUrl = it) },
-                        "https://gitlab.company.io",
-                    )
-                    SecretField("Access token", gitLabToken) { gitLabToken = it }
-                    Text(
-                        "Пустой Base URL отключает действие. Принимаются только MR-ссылки с этого адреса.",
-                        color = Muted,
-                        fontSize = 13.sp,
-                    )
-                }
-
-                controllerState.notice?.let {
-                    Notice(it, controllerState.noticeIsError)
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
-                ) {
-                    OutlinedButton(
-                        onClick = {
-                            controller.testConnections(
-                                settings,
-                                enteredSecrets(mailPassword, llmApiKey, telegramToken, gitLabToken),
+                        FormRow {
+                            Field("IMAP host", settings.imapHost, { settings = settings.copy(imapHost = it) }, "imap.gmail.com")
+                            Field(
+                                "Port",
+                                settings.imapPort.toString(),
+                                { value -> value.toIntOrNull()?.let { settings = settings.copy(imapPort = it) } },
+                                "993",
+                                keyboardType = KeyboardType.Number,
                             )
-                        },
-                        enabled = !controllerState.busy && monitor.status != MonitorStatus.RUNNING && llmReady,
-                    ) {
-                        if (controllerState.busy) {
-                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                            Spacer(Modifier.width(8.dp))
                         }
-                        Text("Проверить")
+                        Field("Folder", settings.folder, { settings = settings.copy(folder = it) }, "INBOX")
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Switch(
+                                checked = settings.useStartTls,
+                                onCheckedChange = { settings = settings.copy(useStartTls = it) },
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text("STARTTLS вместо IMAPS", color = Muted)
+                        }
+                        SecretField("Пароль или app password", mailPassword) { mailPassword = it }
                     }
-                    OutlinedButton(
-                        enabled = monitor.status != MonitorStatus.RUNNING && monitor.status != MonitorStatus.STARTING,
-                        onClick = {
-                            if (controller.save(
-                                settings,
-                                enteredSecrets(mailPassword, llmApiKey, telegramToken, gitLabToken),
-                            )) {
-                                mailPassword = ""
-                                llmApiKey = ""
-                                telegramToken = ""
-                                gitLabToken = ""
+
+                    SettingsCard("02", "Правило упоминания") {
+                        FormRow {
+                            Field("Ваш тег", settings.tag, { settings = settings.copy(tag = it) }, "@dmitry.bykov")
+                            Field(
+                                "Проверять каждые, мин",
+                                settings.pollIntervalMinutes.toString(),
+                                { value -> value.toIntOrNull()?.let { settings = settings.copy(pollIntervalMinutes = it) } },
+                                "2",
+                                keyboardType = KeyboardType.Number,
+                            )
+                        }
+                        Text("При первом подключении старые письма не пересылаются.", color = Muted, fontSize = 13.sp)
+                    }
+
+                    SettingsCard("03", "Модель через Koog") {
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            FilterChip(
+                                selected = settings.llmProvider == LlmProviderType.OLLAMA,
+                                onClick = { settings = settings.copy(llmProvider = LlmProviderType.OLLAMA) },
+                                label = { Text("Локальная Ollama") },
+                            )
+                            FilterChip(
+                                selected = settings.llmProvider == LlmProviderType.CUSTOM,
+                                onClick = { settings = settings.copy(llmProvider = LlmProviderType.CUSTOM) },
+                                label = { Text("Корпоративная") },
+                            )
+                        }
+                        if (settings.llmProvider == LlmProviderType.OLLAMA) {
+                            Text("Ollama работает локально на http://localhost:11434", color = Muted, fontSize = 13.sp)
+                            ModelSelector(
+                                options = controllerState.ollamaModels,
+                                selected = settings.ollamaModel,
+                                onSelect = { settings = settings.copy(ollamaModel = it) },
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                OutlinedButton(
+                                    onClick = controller::refreshOllamaModels,
+                                    enabled = !controllerState.ollamaModelsLoading,
+                                ) { Text("Обновить список") }
+                                if (controllerState.ollamaModelsLoading) {
+                                    Spacer(Modifier.width(10.dp))
+                                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                }
                             }
-                        },
-                    ) { Text("Сохранить") }
-                    if (monitor.status == MonitorStatus.RUNNING || monitor.status == MonitorStatus.STARTING) {
-                        Button(onClick = controller::stop, colors = ButtonDefaults.buttonColors(containerColor = Danger)) {
-                            Text("Остановить", color = Ink)
-                        }
-                    } else if (monitor.status == MonitorStatus.STOPPING) {
-                        Button(onClick = {}, enabled = false) { Text("Останавливается...") }
-                    } else {
-                        Button(onClick = {
-                            controller.start(
-                                settings,
-                                enteredSecrets(mailPassword, llmApiKey, telegramToken, gitLabToken),
+                            controllerState.ollamaModelsError?.let { Notice(it, true) }
+                            if (
+                                settings.ollamaModel.isNotBlank() &&
+                                controllerState.ollamaModels.isNotEmpty() &&
+                                settings.ollamaModel !in controllerState.ollamaModels
+                            ) {
+                                Notice("Выбранная модель больше не установлена в Ollama", true)
+                            }
+                        } else {
+                            Field(
+                                "Base URL",
+                                settings.customBaseUrl,
+                                { settings = settings.copy(customBaseUrl = it) },
+                                "https://llm.company.io",
                             )
-                        }, enabled = llmReady) { Text("Запустить агента") }
+                            FormRow {
+                                Field(
+                                    "Chat path",
+                                    settings.customChatPath,
+                                    { settings = settings.copy(customChatPath = it) },
+                                    "v1/chat/completions",
+                                )
+                                Field(
+                                    "Model ID",
+                                    settings.customModel,
+                                    { settings = settings.copy(customModel = it) },
+                                    "company-chat",
+                                )
+                            }
+                            SecretField("API Key", llmApiKey) { llmApiKey = it }
+                        }
                     }
+
+                    SettingsCard("04", "Доставка в Telegram") {
+                        Field(
+                            "Chat ID",
+                            settings.telegramChatId,
+                            { settings = settings.copy(telegramChatId = it) },
+                            "123456789 или -100...",
+                        )
+                        SecretField("Bot token", telegramToken) { telegramToken = it }
+                    }
+
+                    SettingsCard("05", "Автоматизация GitLab") {
+                        Field(
+                            "GitLab Base URL",
+                            settings.gitLabBaseUrl,
+                            { settings = settings.copy(gitLabBaseUrl = it) },
+                            "https://gitlab.company.io",
+                        )
+                        SecretField("Access token", gitLabToken) { gitLabToken = it }
+                        Text(
+                            "Пустой Base URL отключает действие. Принимаются только MR-ссылки с этого адреса.",
+                            color = Muted,
+                            fontSize = 13.sp,
+                        )
+                    }
+
+                    controllerState.notice?.let {
+                        Notice(it, controllerState.noticeIsError)
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                controller.testConnections(
+                                    settings,
+                                    enteredSecrets(mailPassword, llmApiKey, telegramToken, gitLabToken),
+                                )
+                            },
+                            enabled = !controllerState.busy && monitor.status != MonitorStatus.RUNNING && llmReady,
+                        ) {
+                            if (controllerState.busy) {
+                                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Text("Проверить")
+                        }
+                        OutlinedButton(
+                            enabled = monitor.status != MonitorStatus.RUNNING && monitor.status != MonitorStatus.STARTING,
+                            onClick = {
+                                if (controller.save(
+                                        settings,
+                                        enteredSecrets(mailPassword, llmApiKey, telegramToken, gitLabToken),
+                                    )) {
+                                    mailPassword = ""
+                                    llmApiKey = ""
+                                    telegramToken = ""
+                                    gitLabToken = ""
+                                }
+                            },
+                        ) { Text("Сохранить") }
+                        if (monitor.status == MonitorStatus.RUNNING || monitor.status == MonitorStatus.STARTING) {
+                            Button(onClick = controller::stop, colors = ButtonDefaults.buttonColors(containerColor = Danger)) {
+                                Text("Остановить", color = Ink)
+                            }
+                        } else if (monitor.status == MonitorStatus.STOPPING) {
+                            Button(onClick = {}, enabled = false) { Text("Останавливается...") }
+                        } else {
+                            Button(onClick = {
+                                controller.start(
+                                    settings,
+                                    enteredSecrets(mailPassword, llmApiKey, telegramToken, gitLabToken),
+                                )
+                            }, enabled = llmReady) { Text("Запустить агента") }
+                        }
+                    }
+                    Spacer(Modifier.height(20.dp))
                 }
-                Spacer(Modifier.height(20.dp))
+                StatusPanel(monitor, hasRequiredSecrets)
             }
-            StatusPanel(monitor, hasRequiredSecrets)
         }
     }
 }
