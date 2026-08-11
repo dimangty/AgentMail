@@ -28,33 +28,70 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
             statement.execute("PRAGMA busy_timeout = 5000")
             statement.execute("PRAGMA journal_mode = WAL")
             statement.execute("PRAGMA synchronous = FULL")
-            statement.execute(
-                """
-                CREATE TABLE IF NOT EXISTS delivery_history (
-                    profile_key TEXT NOT NULL,
-                    email_key TEXT NOT NULL,
-                    sender TEXT NOT NULL,
-                    subject TEXT NOT NULL,
-                    received_at_ms INTEGER,
-                    uid_validity INTEGER NOT NULL,
-                    imap_uid INTEGER NOT NULL,
-                    status TEXT NOT NULL CHECK (status IN ('ATTEMPTING', 'DELIVERED', 'UNKNOWN', 'FAILED')),
-                    telegram_message_id INTEGER,
-                    reserved_at_ms INTEGER NOT NULL,
-                    delivered_at_ms INTEGER,
-                    updated_at_ms INTEGER NOT NULL,
-                    last_error TEXT,
-                    PRIMARY KEY (profile_key, email_key)
-                )
-                """.trimIndent()
-            )
-            statement.execute(
-                "CREATE INDEX IF NOT EXISTS delivery_history_recent_idx " +
-                    "ON delivery_history(profile_key, updated_at_ms DESC)"
-            )
-            statement.execute("PRAGMA user_version = 1")
         }
+        migrateSchema()
         recoverStaleAttempts()
+        recoverStaleGitLabActions()
+    }
+
+    private fun migrateSchema() {
+        val version = connection.createStatement().use { statement ->
+            statement.executeQuery("PRAGMA user_version").use { result ->
+                check(result.next()) { "Cannot read history database version" }
+                result.getInt(1)
+            }
+        }
+        require(version <= SCHEMA_VERSION) { "Unsupported history database version $version" }
+        connection.autoCommit = false
+        try {
+            connection.createStatement().use { statement ->
+                statement.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS delivery_history (
+                        profile_key TEXT NOT NULL,
+                        email_key TEXT NOT NULL,
+                        sender TEXT NOT NULL,
+                        subject TEXT NOT NULL,
+                        received_at_ms INTEGER,
+                        uid_validity INTEGER NOT NULL,
+                        imap_uid INTEGER NOT NULL,
+                        status TEXT NOT NULL CHECK (status IN ('ATTEMPTING', 'DELIVERED', 'UNKNOWN', 'FAILED')),
+                        telegram_message_id INTEGER,
+                        reserved_at_ms INTEGER NOT NULL,
+                        delivered_at_ms INTEGER,
+                        updated_at_ms INTEGER NOT NULL,
+                        last_error TEXT,
+                        PRIMARY KEY (profile_key, email_key)
+                    )
+                    """.trimIndent()
+                )
+                statement.execute(
+                    "CREATE INDEX IF NOT EXISTS delivery_history_recent_idx " +
+                        "ON delivery_history(profile_key, updated_at_ms DESC)"
+                )
+                statement.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS gitlab_action_history (
+                        profile_key TEXT NOT NULL,
+                        email_key TEXT NOT NULL,
+                        status TEXT NOT NULL CHECK (status IN ('ATTEMPTING', 'SUCCEEDED', 'FAILED')),
+                        reserved_at_ms INTEGER NOT NULL,
+                        succeeded_at_ms INTEGER,
+                        updated_at_ms INTEGER NOT NULL,
+                        last_error TEXT,
+                        PRIMARY KEY (profile_key, email_key)
+                    )
+                    """.trimIndent()
+                )
+                statement.execute("PRAGMA user_version = $SCHEMA_VERSION")
+            }
+            connection.commit()
+        } catch (error: Exception) {
+            connection.rollback()
+            throw error
+        } finally {
+            connection.autoCommit = true
+        }
     }
 
     /**
@@ -166,6 +203,51 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
         }
     }
 
+    @Synchronized
+    fun gitLabActionStatus(profileKey: String, emailKey: String): GitLabActionStatus? {
+        recoverStaleGitLabActions()
+        return connection.prepareStatement(
+            "SELECT status FROM gitlab_action_history WHERE profile_key = ? AND email_key = ?"
+        ).use { statement ->
+            statement.setString(1, profileKey)
+            statement.setString(2, emailKey)
+            statement.executeQuery().use { result ->
+                if (result.next()) GitLabActionStatus.valueOf(result.getString("status")) else null
+            }
+        }
+    }
+
+    @Synchronized
+    fun beginGitLabAction(profileKey: String, emailKey: String): Boolean {
+        val now = System.currentTimeMillis()
+        return connection.prepareStatement(
+            """
+            INSERT INTO gitlab_action_history (profile_key, email_key, status, reserved_at_ms, updated_at_ms)
+            VALUES (?, ?, 'ATTEMPTING', ?, ?)
+            ON CONFLICT(profile_key, email_key) DO UPDATE SET
+                status = 'ATTEMPTING', reserved_at_ms = excluded.reserved_at_ms,
+                updated_at_ms = excluded.updated_at_ms, last_error = NULL
+            WHERE gitlab_action_history.status = 'FAILED'
+            """.trimIndent()
+        ).use { statement ->
+            statement.setString(1, profileKey)
+            statement.setString(2, emailKey)
+            statement.setLong(3, now)
+            statement.setLong(4, now)
+            statement.executeUpdate() == 1
+        }
+    }
+
+    @Synchronized
+    fun markGitLabActionSucceeded(profileKey: String, emailKey: String) {
+        updateGitLabStatus(profileKey, emailKey, GitLabActionStatus.SUCCEEDED, null)
+    }
+
+    @Synchronized
+    fun markGitLabActionFailed(profileKey: String, emailKey: String, error: String?) {
+        updateGitLabStatus(profileKey, emailKey, GitLabActionStatus.FAILED, error)
+    }
+
     private fun recoverStaleAttempts() {
         // После сбоя неизвестно, принял ли Telegram запрос, поэтому зависшая попытка не становится FAILED.
         connection.prepareStatement(
@@ -176,6 +258,43 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
             statement.setLong(1, now)
             statement.setLong(2, now - STALE_ATTEMPT_MS)
             statement.executeUpdate()
+        }
+    }
+
+    private fun recoverStaleGitLabActions() {
+        connection.prepareStatement(
+            "UPDATE gitlab_action_history SET status = 'FAILED', updated_at_ms = ?, " +
+                "last_error = 'Прерванная попытка' WHERE status = 'ATTEMPTING' AND reserved_at_ms < ?"
+        ).use { statement ->
+            val now = System.currentTimeMillis()
+            statement.setLong(1, now)
+            statement.setLong(2, now - STALE_GITLAB_ACTION_MS)
+            statement.executeUpdate()
+        }
+    }
+
+    private fun updateGitLabStatus(
+        profileKey: String,
+        emailKey: String,
+        status: GitLabActionStatus,
+        error: String?,
+    ) {
+        require(status != GitLabActionStatus.ATTEMPTING)
+        val now = System.currentTimeMillis()
+        connection.prepareStatement(
+            """
+            UPDATE gitlab_action_history SET status = ?, succeeded_at_ms = ?, updated_at_ms = ?, last_error = ?
+            WHERE profile_key = ? AND email_key = ? AND status = 'ATTEMPTING'
+            """.trimIndent()
+        ).use { statement ->
+            statement.setString(1, status.name)
+            if (status == GitLabActionStatus.SUCCEEDED) statement.setLong(2, now)
+            else statement.setNull(2, java.sql.Types.BIGINT)
+            statement.setLong(3, now)
+            error?.let { statement.setString(4, it.take(500)) } ?: statement.setNull(4, java.sql.Types.VARCHAR)
+            statement.setString(5, profileKey)
+            statement.setString(6, emailKey)
+            check(statement.executeUpdate() == 1) { "GitLab action reservation not found" }
         }
     }
 
@@ -225,6 +344,8 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
 
     companion object {
         private const val STALE_ATTEMPT_MS = 2 * 60_000L
+        private const val STALE_GITLAB_ACTION_MS = 2 * 60_000L
+        private const val SCHEMA_VERSION = 2
 
         /**
          * Возвращает платформенный путь к базе истории в пользовательском каталоге

@@ -37,6 +37,30 @@ class DeliveryKeyTest {
         assertEquals(DeliveryKey.email(first), DeliveryKey.email(moved))
     }
 
+    @Test
+    fun `GitLab profile ignores Telegram routing`() {
+        val settings = AppSettings(
+            imapHost = "imap.company.test",
+            imapUsername = "user@company.test",
+            folder = "INBOX",
+            telegramChatId = "42",
+            gitLabBaseUrl = "https://gitlab.company.test",
+        )
+
+        assertEquals(
+            DeliveryKey.gitLabProfile(settings),
+            DeliveryKey.gitLabProfile(settings.copy(telegramChatId = "99")),
+        )
+        assertEquals(
+            DeliveryKey.gitLabProfile(settings),
+            DeliveryKey.gitLabProfile(settings.copy(gitLabBaseUrl = "https://GITLAB.company.test:443/")),
+        )
+        assertNotEquals(
+            DeliveryKey.gitLabProfile(settings),
+            DeliveryKey.gitLabProfile(settings.copy(gitLabBaseUrl = "https://other.company.test")),
+        )
+    }
+
     private fun message(
         uid: Long,
         messageId: String?,

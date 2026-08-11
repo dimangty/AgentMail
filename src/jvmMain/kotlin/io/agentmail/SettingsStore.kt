@@ -35,6 +35,7 @@ class SettingsStore : AutoCloseable {
         customChatPath = preferences.get("customChatPath", "v1/chat/completions"),
         customModel = preferences.get("customModel", ""),
         telegramChatId = preferences.get("telegramChatId", ""),
+        gitLabBaseUrl = preferences.get("gitLabBaseUrl", ""),
     )
 
     /**
@@ -61,10 +62,12 @@ class SettingsStore : AutoCloseable {
         preferences.put("customChatPath", settings.customChatPath.trim().trimStart('/'))
         preferences.put("customModel", settings.customModel.trim())
         preferences.put("telegramChatId", settings.telegramChatId.trim())
+        preferences.put("gitLabBaseUrl", settings.gitLabBaseUrl.trim().trimEnd('/'))
         secrets?.let {
             keyring.setPassword(SERVICE, MAIL_PASSWORD, it.mailPassword)
             keyring.setPassword(SERVICE, TELEGRAM_TOKEN, it.telegramBotToken)
             if (it.llmApiKey.isNotBlank()) keyring.setPassword(SERVICE, LLM_API_KEY, it.llmApiKey)
+            if (it.gitLabAccessToken.isNotBlank()) keyring.setPassword(SERVICE, GITLAB_ACCESS_TOKEN, it.gitLabAccessToken)
         }
         preferences.flush()
     }
@@ -82,6 +85,7 @@ class SettingsStore : AutoCloseable {
             mailPassword = password(MAIL_PASSWORD),
             llmApiKey = password(LLM_API_KEY),
             telegramBotToken = password(TELEGRAM_TOKEN),
+            gitLabAccessToken = password(GITLAB_ACCESS_TOKEN),
         )
         return secrets.takeIf { it.mailPassword.isNotBlank() && it.telegramBotToken.isNotBlank() }
     }
@@ -153,6 +157,7 @@ class SettingsStore : AutoCloseable {
         const val MAIL_PASSWORD = "mail-password"
         const val LLM_API_KEY = "llm-api-key"
         const val TELEGRAM_TOKEN = "telegram-bot-token"
+        const val GITLAB_ACCESS_TOKEN = "gitlab-access-token"
     }
 }
 

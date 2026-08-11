@@ -22,6 +22,7 @@ data class ControllerState(
     val settings: AppSettings = AppSettings(),
     val hasMailAndTelegramSecrets: Boolean = false,
     val hasCustomApiKey: Boolean = false,
+    val hasGitLabToken: Boolean = false,
     val ollamaModels: List<String> = emptyList(),
     val ollamaModelsLoading: Boolean = false,
     val ollamaModelsError: String? = null,
@@ -44,6 +45,7 @@ class AppController(
     private val mailClient: ImapMailClient,
     private val summarizer: KoogSummarizer,
     private val telegram: TelegramClient,
+    private val gitLab: GitLabClient,
     private val monitoring: MonitoringService,
     private val ollamaModels: OllamaModelsClient,
 ) : AutoCloseable {
@@ -54,6 +56,7 @@ class AppController(
             settings = settings,
             hasMailAndTelegramSecrets = secrets != null,
             hasCustomApiKey = !secrets?.llmApiKey.isNullOrBlank(),
+            hasGitLabToken = !secrets?.gitLabAccessToken.isNullOrBlank(),
         )
     })
     /** Сохранённая конфигурация и состояние операций формы без значений секретов. */
@@ -77,15 +80,17 @@ class AppController(
      */
     fun save(settings: AppSettings, enteredSecrets: Secrets?): Boolean = runCatching {
         val normalized = settings.normalized()
-        val resolvedSecrets = resolveSecrets(enteredSecrets)
+        val resolvedSecrets = resolveSecrets(enteredSecrets, normalized)
+        val gitLabOriginChanged = normalized.gitLabBaseUrl.canonicalGitLabOrigin() !=
+            mutableState.value.settings.gitLabBaseUrl.canonicalGitLabOrigin()
+        if (
+            normalized.gitLabBaseUrl.isNotBlank() && gitLabOriginChanged &&
+            enteredSecrets?.gitLabAccessToken.isNullOrBlank()
+        ) {
+            error("Для нового GitLab Base URL введите access token заново")
+        }
         if (enteredSecrets != null && !resolvedSecrets.isCompleteFor(normalized)) {
-            error(
-                if (normalized.llmProvider == LlmProviderType.OLLAMA) {
-                    "Для первого сохранения заполните пароль почты и Telegram token"
-                } else {
-                    "Для первого сохранения заполните пароль почты, API key и Telegram token"
-                }
-            )
+            error("Для первого сохранения заполните все обязательные секреты")
         }
         store.save(normalized, resolvedSecrets.takeIf { enteredSecrets != null })
         monitoring.loadHistory(normalized, resolvedSecrets?.telegramBotToken)
@@ -94,6 +99,7 @@ class AppController(
             settings = normalized,
             hasMailAndTelegramSecrets = savedSecrets != null,
             hasCustomApiKey = !savedSecrets?.llmApiKey.isNullOrBlank(),
+            hasGitLabToken = !savedSecrets?.gitLabAccessToken.isNullOrBlank(),
             notice = "Настройки сохранены в системном хранилище",
             noticeIsError = false,
         )
@@ -111,7 +117,7 @@ class AppController(
     fun start(settings: AppSettings, enteredSecrets: Secrets?) {
         if (snapshot.value.status == MonitorStatus.RUNNING) return
         val normalized = settings.normalized()
-        val secrets = resolveSecrets(enteredSecrets)
+        val secrets = resolveSecrets(enteredSecrets, normalized)
         val errors = connectionErrors(normalized, secrets)
         if (errors.isNotEmpty()) {
             showError(errors.joinToString(". "))
@@ -135,7 +141,7 @@ class AppController(
      */
     fun testConnections(settings: AppSettings, enteredSecrets: Secrets?) {
         val normalized = settings.normalized()
-        val secrets = resolveSecrets(enteredSecrets)
+        val secrets = resolveSecrets(enteredSecrets, normalized)
         val errors = connectionErrors(normalized, secrets)
         if (errors.isNotEmpty()) {
             showError(errors.joinToString(". "))
@@ -149,6 +155,10 @@ class AppController(
                 mailClient.test(normalized, secrets.mailPassword)
                 mutableState.value = mutableState.value.copy(notice = "Проверяю модель...")
                 summarizer.test(normalized, secrets.llmApiKey)
+                if (normalized.gitLabBaseUrl.isNotBlank()) {
+                    mutableState.value = mutableState.value.copy(notice = "Проверяю GitLab...")
+                    gitLab.test(normalized.gitLabBaseUrl, secrets.gitLabAccessToken)
+                }
                 mutableState.value = mutableState.value.copy(notice = "Проверяю Telegram...")
                 telegram.test(secrets.telegramBotToken, normalized.telegramChatId)
             }.onSuccess {
@@ -228,14 +238,23 @@ class AppController(
      * использование keyring как есть, а пустые поля переданного объекта наследуют
      * сохранённые значения; явное удаление секрета этим контрактом не предусмотрено.
      */
-    private fun resolveSecrets(entered: Secrets?): Secrets? {
+    private fun resolveSecrets(entered: Secrets?, targetSettings: AppSettings): Secrets? {
         val saved = store.loadSecrets()
-        if (entered == null) return saved
+        val sameGitLabOrigin = targetSettings.gitLabBaseUrl.canonicalGitLabOrigin() ==
+            mutableState.value.settings.gitLabBaseUrl.canonicalGitLabOrigin()
+        if (entered == null) {
+            return saved?.copy(
+                gitLabAccessToken = saved.gitLabAccessToken.takeIf { sameGitLabOrigin }.orEmpty(),
+            )
+        }
         // Пустое поле означает «оставить сохранённое значение», а не удалить его.
         return Secrets(
             mailPassword = entered.mailPassword.ifBlank { saved?.mailPassword.orEmpty() },
             llmApiKey = entered.llmApiKey.ifBlank { saved?.llmApiKey.orEmpty() },
             telegramBotToken = entered.telegramBotToken.ifBlank { saved?.telegramBotToken.orEmpty() },
+            gitLabAccessToken = entered.gitLabAccessToken.ifBlank {
+                saved?.gitLabAccessToken?.takeIf { sameGitLabOrigin }.orEmpty()
+            },
         )
     }
 
@@ -249,6 +268,7 @@ class AppController(
         monitoring.close()
         ollamaModels.close()
         telegram.close()
+        gitLab.close()
         store.close()
     }
 }

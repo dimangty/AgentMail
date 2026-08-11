@@ -178,7 +178,27 @@ class ImapMailClient {
         subject = subject?.let(::decodeHeader).orEmpty(),
         body = extractText(this).take(MAX_BODY_CHARS),
         receivedAt = receivedDate?.toInstant() ?: sentDate?.toInstant(),
+        links = extractLinks(this),
     )
+
+    /** Сохраняет ограниченный набор HTML-ссылок, не смешивая их с видимым текстом письма. */
+    internal fun extractLinks(part: Part): List<MailLink> {
+        if (Part.ATTACHMENT.equals(part.disposition, ignoreCase = true) || part.fileName != null) return emptyList()
+        val links = when {
+            part.isMimeType("text/html") -> Jsoup.parse(readBoundedText(part)).select("a[href]").map { anchor ->
+                MailLink(
+                    text = anchor.text().replace(Regex("\\s+"), " ").trim().take(MAX_LINK_CHARS),
+                    href = anchor.attr("href").trim().take(MAX_LINK_CHARS),
+                )
+            }
+            part.isMimeType("multipart/*") -> {
+                val multipart = part.content as Multipart
+                (0 until multipart.count).flatMap { extractLinks(multipart.getBodyPart(it)) }
+            }
+            else -> emptyList()
+        }
+        return links.filter { it.text.isNotBlank() && it.href.isNotBlank() }.distinct().take(MAX_LINKS)
+    }
 
     /**
      * Извлекает пользовательский текст из MIME-дерева без содержимого вложений.
@@ -251,6 +271,8 @@ class ImapMailClient {
     private companion object {
         const val MAX_BATCH = 100
         const val MAX_BODY_CHARS = 200_000
+        const val MAX_LINKS = 50
+        const val MAX_LINK_CHARS = 2_000
         const val RESET_LOOKBACK_MS = 5 * 60_000L
     }
 }

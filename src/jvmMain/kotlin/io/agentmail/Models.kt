@@ -1,6 +1,8 @@
 package io.agentmail
 
+import java.net.URI
 import java.time.Instant
+import java.util.Locale
 
 /**
  * Поддерживаемые способы получения краткого содержания письма: локальная Ollama
@@ -42,6 +44,7 @@ data class AppSettings(
     val customChatPath: String = "v1/chat/completions",
     val customModel: String = "",
     val telegramChatId: String = "",
+    val gitLabBaseUrl: String = "",
 )
 
 /**
@@ -55,6 +58,12 @@ data class Secrets(
     val mailPassword: String,
     val llmApiKey: String,
     val telegramBotToken: String,
+    val gitLabAccessToken: String = "",
+)
+
+data class MailLink(
+    val text: String,
+    val href: String,
 )
 
 /**
@@ -72,6 +81,7 @@ data class MailMessage(
     val subject: String,
     val body: String,
     val receivedAt: Instant?,
+    val links: List<MailLink> = emptyList(),
 )
 
 /**
@@ -82,6 +92,8 @@ data class MailMessage(
  * а `FAILED` разрешает новую попытку после гарантированного отказа.
  */
 enum class DeliveryStatus { ATTEMPTING, DELIVERED, UNKNOWN, FAILED }
+
+enum class GitLabActionStatus { ATTEMPTING, SUCCEEDED, FAILED }
 
 /**
  * Проекция устойчивой записи доставки для отображения в UI.
@@ -136,6 +148,9 @@ fun AppSettings.normalized(): AppSettings = copy(
     customChatPath = customChatPath.trim().trimStart('/'),
     customModel = customModel.trim(),
     telegramChatId = telegramChatId.trim(),
+    gitLabBaseUrl = gitLabBaseUrl.trim().trimEnd('/').let { value ->
+        value.canonicalGitLabOrigin() ?: value
+    },
 )
 
 /**
@@ -163,8 +178,14 @@ fun AppSettings.validationErrors(secrets: Secrets?): List<String> = buildList {
         }
     }
     if (telegramChatId.isBlank()) add("Укажите Telegram chat ID")
+    if (gitLabBaseUrl.isNotBlank() && !gitLabBaseUrl.isValidGitLabBaseUrl()) {
+        add("GitLab Base URL должен быть корневым HTTPS URL без query и fragment")
+    }
     if (secrets?.mailPassword.isNullOrBlank()) add("Сохраните пароль почты")
     if (secrets?.telegramBotToken.isNullOrBlank()) add("Сохраните Telegram bot token")
+    if (gitLabBaseUrl.isNotBlank() && secrets?.gitLabAccessToken.isNullOrBlank()) {
+        add("Сохраните GitLab access token")
+    }
     if (llmProvider == LlmProviderType.CUSTOM && secrets?.llmApiKey.isNullOrBlank()) {
         add("Сохраните API key корпоративной модели")
     }
@@ -178,7 +199,26 @@ fun AppSettings.validationErrors(secrets: Secrets?): List<String> = buildList {
  */
 fun Secrets?.isCompleteFor(settings: AppSettings): Boolean =
     this != null && mailPassword.isNotBlank() && telegramBotToken.isNotBlank() &&
-        (settings.llmProvider != LlmProviderType.CUSTOM || llmApiKey.isNotBlank())
+        (settings.llmProvider != LlmProviderType.CUSTOM || llmApiKey.isNotBlank()) &&
+        (settings.gitLabBaseUrl.isBlank() || gitLabAccessToken.isNotBlank())
+
+private fun String.isValidGitLabBaseUrl(): Boolean = canonicalGitLabOrigin() != null
+
+internal fun String.canonicalGitLabOrigin(): String? = runCatching {
+    val uri = URI(this)
+    require(
+        uri.scheme.equals("https", ignoreCase = true) &&
+        !uri.host.isNullOrBlank() && uri.userInfo == null && uri.query == null && uri.fragment == null &&
+        !uri.rawAuthority.endsWith(':') &&
+        (uri.path.isNullOrBlank() || uri.path == "/") &&
+        (uri.port == -1 || uri.port in 1..65535)
+    )
+    val host = uri.host.lowercase(Locale.ROOT).let {
+        if (':' in it && !it.startsWith('[')) "[$it]" else it
+    }
+    val port = uri.port.takeIf { it != -1 && it != 443 }?.let { ":$it" }.orEmpty()
+    "https://$host$port"
+}.getOrNull()
 
 /**
  * Проверяет доступность выбранной Ollama-модели по актуальному локальному каталогу.

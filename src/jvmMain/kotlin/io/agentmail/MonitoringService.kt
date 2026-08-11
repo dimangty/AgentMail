@@ -31,6 +31,7 @@ class MonitoringService(
     private val mailClient: ImapMailClient,
     private val summarizer: KoogSummarizer,
     private val telegram: TelegramClient,
+    private val gitLab: GitLabIssueReviewer,
     private val history: DeliveryHistoryStore,
 ) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -139,6 +140,9 @@ class MonitoringService(
         // Курсор ограничен IMAP-аккаунтом, а профиль доставки дополнительно учитывает чат и бота.
         val accountKey = "${settings.email}|${settings.imapUsername}|${settings.imapHost}|${settings.folder}"
         val profileKey = DeliveryKey.profile(settings, secrets.telegramBotToken)
+        val gitLabProfileKey = settings.gitLabBaseUrl.takeIf(String::isNotBlank)?.let {
+            DeliveryKey.gitLabProfile(settings)
+        }
         var cursor = settingsStore.cursor(accountKey)
         val result = mailClient.poll(settings, secrets.mailPassword, cursor)
         if (result.initialized) {
@@ -155,52 +159,15 @@ class MonitoringService(
             update { it.copy(checked = it.checked + 1) }
             if (TagMatcher.matches(message, settings.tag)) {
                 update { it.copy(matched = it.matched + 1) }
-                val emailKey = DeliveryKey.email(message)
-                if (history.isBlocked(profileKey, emailKey)) {
-                    // DELIVERED, UNKNOWN и незавершённая ATTEMPTING блокируют повтор; FAILED не блокирует.
-                    addEvent("Уже отправлялось, пропущено: ${message.subject.ifBlank { "Без темы" }.take(45)}")
-                    refreshHistory(profileKey)
-                    cursor = MailCursor(message.uid, result.uidValidity, System.currentTimeMillis())
-                    settingsStore.saveCursor(accountKey, cursor)
-                    continue
+                if (!processTelegram(settings, secrets, message, result.uidValidity, profileKey)) {
+                    throw ActionInProgressException("Telegram delivery is already in progress")
                 }
-                val summary = try {
-                    summarizer.summarize(settings, secrets.llmApiKey, message)
-                } catch (cancellation: CancellationException) {
-                    throw cancellation
-                } catch (_: Exception) {
-                    // Сбой модели не должен останавливать доставку: локальный фрагмент не требует LLM.
-                    addEvent("Модель недоступна, отправлен фрагмент письма")
-                    TelegramMessageFormatter.localExcerpt(message)
+            }
+            val gitLabRef = GitLabMergeNotificationParser.parse(message, settings.gitLabBaseUrl)
+            if (gitLabRef != null && gitLabProfileKey != null) {
+                if (!processGitLab(settings, secrets, message, gitLabRef, gitLabProfileKey)) {
+                    throw ActionInProgressException("GitLab action is already in progress")
                 }
-                // Атомарная резервация перед запросом закрывает окно для параллельной или повторной отправки.
-                if (!history.beginAttempt(profileKey, emailKey, message, result.uidValidity)) continue
-                val telegramMessageId = try {
-                    telegram.send(
-                        token = secrets.telegramBotToken,
-                        chatId = settings.telegramChatId,
-                        html = TelegramMessageFormatter.format(message, settings.tag, summary),
-                    )
-                } catch (cancellation: CancellationException) {
-                    // Отмена не доказывает отказ Telegram: запрос мог завершиться уже после отмены корутины.
-                    history.markUnknown(profileKey, emailKey, "Отправка прервана")
-                    refreshHistory(profileKey)
-                    throw cancellation
-                } catch (rejected: PermanentConfigurationException) {
-                    // Telegram гарантированно отклонил запрос: после исправления настроек повтор безопасен.
-                    history.markFailed(profileKey, emailKey, safeError(rejected))
-                    refreshHistory(profileKey)
-                    throw rejected
-                } catch (error: Exception) {
-                    // Неклассифицированный сбой неоднозначен: Telegram мог принять сообщение до разрыва связи.
-                    history.markUnknown(profileKey, emailKey, safeError(error))
-                    refreshHistory(profileKey)
-                    throw error
-                }
-                history.markDelivered(profileKey, emailKey, telegramMessageId)
-                refreshHistory(profileKey)
-                update { it.copy(sent = it.sent + 1) }
-                addEvent("Отправлено: ${message.subject.ifBlank { "Без темы" }.take(60)}")
             }
             // Запись после обработки создаёт устойчивую границу: после перезапуска письмо не читается повторно.
             cursor = MailCursor(message.uid, result.uidValidity, System.currentTimeMillis())
@@ -227,6 +194,82 @@ class MonitoringService(
             MailCursor(result.highestUid, result.uidValidity, System.currentTimeMillis()),
         )
         update { it.copy(lastCheck = Instant.now(), lastError = null) }
+    }
+
+    private suspend fun processTelegram(
+        settings: AppSettings,
+        secrets: Secrets,
+        message: MailMessage,
+        uidValidity: Long,
+        profileKey: String,
+    ): Boolean {
+        val emailKey = DeliveryKey.email(message)
+        if (history.isBlocked(profileKey, emailKey)) {
+            addEvent("Уже отправлялось, пропущено: ${message.subject.ifBlank { "Без темы" }.take(45)}")
+            refreshHistory(profileKey)
+            return true
+        }
+        val summary = try {
+            summarizer.summarize(settings, secrets.llmApiKey, message)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            addEvent("Модель недоступна, отправлен фрагмент письма")
+            TelegramMessageFormatter.localExcerpt(message)
+        }
+        if (!history.beginAttempt(profileKey, emailKey, message, uidValidity)) return false
+        val telegramMessageId = try {
+            telegram.send(
+                token = secrets.telegramBotToken,
+                chatId = settings.telegramChatId,
+                html = TelegramMessageFormatter.format(message, settings.tag, summary),
+            )
+        } catch (cancellation: CancellationException) {
+            history.markUnknown(profileKey, emailKey, "Отправка прервана")
+            refreshHistory(profileKey)
+            throw cancellation
+        } catch (rejected: PermanentConfigurationException) {
+            history.markFailed(profileKey, emailKey, safeError(rejected))
+            refreshHistory(profileKey)
+            throw rejected
+        } catch (error: Exception) {
+            history.markUnknown(profileKey, emailKey, safeError(error))
+            refreshHistory(profileKey)
+            throw error
+        }
+        history.markDelivered(profileKey, emailKey, telegramMessageId)
+        refreshHistory(profileKey)
+        update { it.copy(sent = it.sent + 1) }
+        addEvent("Отправлено: ${message.subject.ifBlank { "Без темы" }.take(60)}")
+        return true
+    }
+
+    private suspend fun processGitLab(
+        settings: AppSettings,
+        secrets: Secrets,
+        message: MailMessage,
+        ref: GitLabMergeRequestRef,
+        profileKey: String,
+    ): Boolean {
+        val emailKey = DeliveryKey.email(message)
+        when (history.gitLabActionStatus(profileKey, emailKey)) {
+            GitLabActionStatus.SUCCEEDED -> return true
+            GitLabActionStatus.ATTEMPTING -> return false
+            GitLabActionStatus.FAILED, null -> Unit
+        }
+        if (!history.beginGitLabAction(profileKey, emailKey)) return false
+        val issueIid = try {
+            gitLab.reviewMergedIssue(settings.gitLabBaseUrl, secrets.gitLabAccessToken, ref)
+        } catch (cancellation: CancellationException) {
+            history.markGitLabActionFailed(profileKey, emailKey, "Действие прервано")
+            throw cancellation
+        } catch (error: Exception) {
+            history.markGitLabActionFailed(profileKey, emailKey, safeError(error))
+            throw error
+        }
+        history.markGitLabActionSucceeded(profileKey, emailKey)
+        issueIid?.let { addEvent("GitLab issue #$it: Reviewed") }
+        return true
     }
 
     private fun addEvent(text: String) {
@@ -264,3 +307,5 @@ class MonitoringService(
         const val MAX_MIME_ATTEMPTS = 3
     }
 }
+
+private class ActionInProgressException(message: String) : Exception(message)

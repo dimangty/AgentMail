@@ -81,13 +81,15 @@ fun AgentMailApp(controller: AppController) {
     var mailPassword by remember { mutableStateOf("") }
     var llmApiKey by remember { mutableStateOf("") }
     var telegramToken by remember { mutableStateOf("") }
+    var gitLabToken by remember { mutableStateOf("") }
     val llmReady = settings.llmProvider != LlmProviderType.OLLAMA ||
         (!controllerState.ollamaModelsLoading &&
             controllerState.ollamaModelsError == null &&
             settings.hasAvailableOllamaModel(controllerState.ollamaModels))
     // Панель оценивает сохранённые секреты применительно к провайдеру, выбранному в локальном черновике.
     val hasRequiredSecrets = controllerState.hasMailAndTelegramSecrets &&
-        (settings.llmProvider != LlmProviderType.CUSTOM || controllerState.hasCustomApiKey)
+        (settings.llmProvider != LlmProviderType.CUSTOM || controllerState.hasCustomApiKey) &&
+        (settings.gitLabBaseUrl.isBlank() || controllerState.hasGitLabToken)
 
     // Успешное сохранение или внешняя загрузка становится новой базой формы, не реагируя на прочие поля state.
     LaunchedEffect(controllerState.settings) {
@@ -281,6 +283,21 @@ fun AgentMailApp(controller: AppController) {
                     SecretField("Bot token", telegramToken) { telegramToken = it }
                 }
 
+                SettingsCard("05", "Автоматизация GitLab") {
+                    Field(
+                        "GitLab Base URL",
+                        settings.gitLabBaseUrl,
+                        { settings = settings.copy(gitLabBaseUrl = it) },
+                        "https://gitlab.company.io",
+                    )
+                    SecretField("Access token", gitLabToken) { gitLabToken = it }
+                    Text(
+                        "Пустой Base URL отключает действие. Принимаются только MR-ссылки с этого адреса.",
+                        color = Muted,
+                        fontSize = 13.sp,
+                    )
+                }
+
                 controllerState.notice?.let {
                     Notice(it, controllerState.noticeIsError)
                 }
@@ -291,7 +308,10 @@ fun AgentMailApp(controller: AppController) {
                 ) {
                     OutlinedButton(
                         onClick = {
-                            controller.testConnections(settings, enteredSecrets(mailPassword, llmApiKey, telegramToken))
+                            controller.testConnections(
+                                settings,
+                                enteredSecrets(mailPassword, llmApiKey, telegramToken, gitLabToken),
+                            )
                         },
                         enabled = !controllerState.busy && monitor.status != MonitorStatus.RUNNING && llmReady,
                     ) {
@@ -304,11 +324,15 @@ fun AgentMailApp(controller: AppController) {
                     OutlinedButton(
                         enabled = monitor.status != MonitorStatus.RUNNING && monitor.status != MonitorStatus.STARTING,
                         onClick = {
-                        if (controller.save(settings, enteredSecrets(mailPassword, llmApiKey, telegramToken))) {
-                            mailPassword = ""
-                            llmApiKey = ""
-                            telegramToken = ""
-                        }
+                            if (controller.save(
+                                settings,
+                                enteredSecrets(mailPassword, llmApiKey, telegramToken, gitLabToken),
+                            )) {
+                                mailPassword = ""
+                                llmApiKey = ""
+                                telegramToken = ""
+                                gitLabToken = ""
+                            }
                         },
                     ) { Text("Сохранить") }
                     if (monitor.status == MonitorStatus.RUNNING || monitor.status == MonitorStatus.STARTING) {
@@ -319,7 +343,10 @@ fun AgentMailApp(controller: AppController) {
                         Button(onClick = {}, enabled = false) { Text("Останавливается...") }
                     } else {
                         Button(onClick = {
-                            controller.start(settings, enteredSecrets(mailPassword, llmApiKey, telegramToken))
+                            controller.start(
+                                settings,
+                                enteredSecrets(mailPassword, llmApiKey, telegramToken, gitLabToken),
+                            )
                         }, enabled = llmReady) { Text("Запустить агента") }
                     }
                 }
@@ -528,8 +555,9 @@ private fun Metric(label: String, value: String, color: Color = Color.White) {
  * форма даёт `null` и сохраняет keyring без изменений, а непустой объект позволяет
  * [AppController] дополнить отдельные пустые поля ранее сохранёнными значениями.
  */
-private fun enteredSecrets(mail: String, llm: String, telegram: String): Secrets? =
-    if (mail.isBlank() && llm.isBlank() && telegram.isBlank()) null else Secrets(mail, llm, telegram)
+private fun enteredSecrets(mail: String, llm: String, telegram: String, gitLab: String): Secrets? =
+    if (mail.isBlank() && llm.isBlank() && telegram.isBlank() && gitLab.isBlank()) null
+    else Secrets(mail, llm, telegram, gitLab)
 
 private fun statusColor(status: MonitorStatus): Color = when (status) {
     MonitorStatus.RUNNING -> Mint

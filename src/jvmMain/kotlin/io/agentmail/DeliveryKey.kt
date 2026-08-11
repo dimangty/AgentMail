@@ -33,6 +33,18 @@ object DeliveryKey {
         ).joinToString("\u0000")
     )
 
+    /** GitLab-действия не зависят от Telegram-чата и ротации access token. */
+    fun gitLabProfile(settings: AppSettings): String = sha256(
+        listOf(
+            "gitlab-profile:v1",
+            settings.imapHost.lowercase(Locale.ROOT),
+            settings.imapPort.toString(),
+            settings.imapUsername,
+            settings.folder,
+            settings.gitLabBaseUrl.canonicalGitLabOrigin() ?: settings.gitLabBaseUrl.lowercase(Locale.ROOT),
+        ).joinToString("\u0000")
+    )
+
     /**
      * Возвращает долговечный ключ письма, не зависящий от его положения в IMAP.
      *

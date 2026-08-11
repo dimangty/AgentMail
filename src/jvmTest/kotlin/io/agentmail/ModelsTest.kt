@@ -2,6 +2,7 @@ package io.agentmail
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** Проверяет провайдер-зависимые правила полноты и миграции конфигурации. */
@@ -51,6 +52,39 @@ class ModelsTest {
 
         assertTrue(settings.hasAvailableOllamaModel(listOf("qwen3:8b")))
         assertTrue(!settings.hasAvailableOllamaModel(listOf("another-model")))
+    }
+
+    @Test
+    fun `configured GitLab requires trusted https url and token`() {
+        val settings = validSettings().copy(gitLabBaseUrl = "http://gitlab.company.test/path")
+        val secrets = Secrets(mailPassword = "mail", llmApiKey = "", telegramBotToken = "telegram")
+
+        val errors = settings.validationErrors(secrets)
+
+        assertTrue(errors.any { it.contains("GitLab Base URL") })
+        assertTrue(errors.contains("Сохраните GitLab access token"))
+        assertTrue(!secrets.isCompleteFor(settings))
+    }
+
+    @Test
+    fun `blank GitLab url keeps automation optional`() {
+        val settings = validSettings()
+        val secrets = Secrets(mailPassword = "mail", llmApiKey = "", telegramBotToken = "telegram")
+
+        assertTrue(settings.validationErrors(secrets).isEmpty())
+        assertTrue(secrets.isCompleteFor(settings))
+    }
+
+    @Test
+    fun `normalizes equivalent GitLab origins`() {
+        assertEquals(
+            "https://gitlab.company.test",
+            validSettings().copy(gitLabBaseUrl = " HTTPS://GITLAB.company.test:443/ ").normalized().gitLabBaseUrl,
+        )
+        assertEquals("https://[::1]", "https://[::1]".canonicalGitLabOrigin())
+        assertNull("https://gitlab.company.test:0".canonicalGitLabOrigin())
+        assertNull("https://gitlab.company.test:99999".canonicalGitLabOrigin())
+        assertNull("https://gitlab.company.test:".canonicalGitLabOrigin())
     }
 
     private fun validSettings() = AppSettings(

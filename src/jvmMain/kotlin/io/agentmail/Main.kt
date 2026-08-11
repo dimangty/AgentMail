@@ -51,10 +51,11 @@ fun main() = application {
         val mailClient = ImapMailClient()
         val summarizer = KoogSummarizer()
         val telegram = TelegramClient()
+        val gitLab = GitLabClient()
         val ollamaModels = OllamaModelsClient()
         val history = DeliveryHistoryStore()
-        val monitoring = MonitoringService(store, mailClient, summarizer, telegram, history)
-        AppController(store, mailClient, summarizer, telegram, monitoring, ollamaModels)
+        val monitoring = MonitoringService(store, mailClient, summarizer, telegram, gitLab, history)
+        AppController(store, mailClient, summarizer, telegram, gitLab, monitoring, ollamaModels)
     }
 
     DisposableEffect(controller) {
