@@ -56,6 +56,15 @@ compose.desktop {
             description = "Corporate email mention notifier"
             vendor = "AgentMail"
             modules("java.naming", "java.sql", "java.security.sasl")
+            macOS {
+                iconFile = project.file("src/jvmMain/composeResources/drawable/app_icon.icns")
+                infoPlist {
+                    extraKeysRawXml = """
+                        <key>LSUIElement</key>
+                        <true/>
+                    """.trimIndent()
+                }
+            }
         }
     }
 }
