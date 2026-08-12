@@ -16,6 +16,7 @@ import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import io.agentmail.agentmail.generated.resources.Res
+import io.agentmail.agentmail.generated.resources.tray_icon_linux
 import io.agentmail.agentmail.generated.resources.tray_icon_mac
 import io.agentmail.agentmail.generated.resources.tray_icon_win
 import java.awt.Desktop
@@ -103,7 +104,8 @@ fun main() = application {
             icon = painterResource(
                 when (OsType.current) {
                     OsType.Mac -> Res.drawable.tray_icon_mac
-                    OsType.Windows, OsType.Linux -> Res.drawable.tray_icon_win
+                    OsType.Windows -> Res.drawable.tray_icon_win
+                    OsType.Linux -> Res.drawable.tray_icon_linux
                 }
             ),
             tooltip = "AgentMail",
@@ -127,11 +129,16 @@ fun main() = application {
         },
         title = "AgentMail",
         state = windowState,
-        icon = painterResource(Res.drawable.tray_icon_win),
+        icon = when (OsType.current) {
+            OsType.Mac -> null
+            OsType.Windows, OsType.Linux -> painterResource(Res.drawable.tray_icon_win)
+        },
         visible = windowVisible,
     ) {
         window.minimumSize = minimumWindowSize
-        window.rootPane.putClientProperty("apple.awt.windowAppearance", "NSAppearanceNameDarkAqua")
+        if (OsType.current == OsType.Mac) {
+            window.rootPane.putClientProperty("apple.awt.windowAppearance", "NSAppearanceNameDarkAqua")
+        }
         if (!traySupported) {
             MenuBar {
                 Menu("AgentMail") {

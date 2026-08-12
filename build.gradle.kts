@@ -68,6 +68,9 @@ compose.desktop {
             windows {
                 iconFile = project.file("src/jvmMain/composeResources/drawable/app_icon_win.ico")
             }
+            linux {
+                iconFile = project.file("src/jvmMain/composeResources/drawable/app_icon_linux.png")
+            }
         }
     }
 }
