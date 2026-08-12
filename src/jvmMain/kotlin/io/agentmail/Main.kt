@@ -16,7 +16,8 @@ import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import io.agentmail.agentmail.generated.resources.Res
-import io.agentmail.agentmail.generated.resources.tray_icon
+import io.agentmail.agentmail.generated.resources.tray_icon_mac
+import io.agentmail.agentmail.generated.resources.tray_icon_win
 import java.awt.Desktop
 import java.awt.EventQueue
 import java.awt.SystemTray
@@ -43,11 +44,7 @@ fun main() = application {
     // На macOS системная команда Quit перехватывается только при наличии tray, чтобы оставить агент работающим.
     val macQuitDesktop = remember(traySupported) {
         runCatching {
-            if (
-                traySupported &&
-                System.getProperty("os.name").startsWith("Mac", ignoreCase = true) &&
-                Desktop.isDesktopSupported()
-            ) {
+            if (traySupported && OsType.current == OsType.Mac && Desktop.isDesktopSupported()) {
                 Desktop.getDesktop().takeIf { it.isSupported(Desktop.Action.APP_QUIT_HANDLER) }
             } else {
                 null
@@ -103,7 +100,12 @@ fun main() = application {
 
     if (traySupported) {
         Tray(
-            icon = painterResource(Res.drawable.tray_icon),
+            icon = painterResource(
+                when (OsType.current) {
+                    OsType.Mac -> Res.drawable.tray_icon_mac
+                    OsType.Windows, OsType.Linux -> Res.drawable.tray_icon_win
+                }
+            ),
             tooltip = "AgentMail",
             onAction = showWindow,
             menu = {
@@ -125,6 +127,7 @@ fun main() = application {
         },
         title = "AgentMail",
         state = windowState,
+        icon = painterResource(Res.drawable.tray_icon_win),
         visible = windowVisible,
     ) {
         window.minimumSize = minimumWindowSize
@@ -141,7 +144,7 @@ fun main() = application {
             if (windowVisible) {
                 window.toFront()
                 window.requestFocus()
-                if (System.getProperty("os.name").startsWith("Mac", ignoreCase = true)) {
+                if (OsType.current == OsType.Mac) {
                     Desktop.getDesktop().requestForeground(true)
                 }
             }
