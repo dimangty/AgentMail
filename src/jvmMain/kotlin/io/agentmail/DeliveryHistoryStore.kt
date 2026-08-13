@@ -355,11 +355,10 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
 
         fun defaultDatabasePath(): Path {
             val home = System.getProperty("user.home")
-            val os = System.getProperty("os.name").lowercase()
-            return when {
-                os.contains("mac") -> Paths.get(home, "Library", "Application Support", "AgentMail", "history.db")
-                os.contains("win") -> Paths.get(System.getenv("APPDATA") ?: home, "AgentMail", "history.db")
-                else -> Paths.get(System.getenv("XDG_DATA_HOME") ?: "$home/.local/share", "agentmail", "history.db")
+            return when (OsType.current) {
+                OsType.Mac -> Paths.get(home, "Library", "Application Support", "AgentMail", "history.db")
+                OsType.Windows -> Paths.get(System.getenv("APPDATA") ?: home, "AgentMail", "history.db")
+                OsType.Linux -> Paths.get(System.getenv("XDG_DATA_HOME") ?: "$home/.local/share", "agentmail", "history.db")
             }
         }
     }

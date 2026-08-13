@@ -57,13 +57,19 @@ compose.desktop {
             vendor = "AgentMail"
             modules("java.naming", "java.sql", "java.security.sasl")
             macOS {
-                iconFile = project.file("src/jvmMain/composeResources/drawable/app_icon.icns")
+                iconFile = project.file("src/jvmMain/composeResources/drawable/app_icon_mac.icns")
                 infoPlist {
                     extraKeysRawXml = """
                         <key>LSUIElement</key>
                         <true/>
                     """.trimIndent()
                 }
+            }
+            windows {
+                iconFile = project.file("src/jvmMain/composeResources/drawable/app_icon_win.ico")
+            }
+            linux {
+                iconFile = project.file("src/jvmMain/composeResources/drawable/app_icon_linux.png")
             }
         }
     }
