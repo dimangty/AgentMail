@@ -43,16 +43,48 @@ object GitLabMergeNotificationParser {
         return GitLabMergeRequestRef(projectPath, iid)
     }
 
-    private fun sameOrigin(first: URI, second: URI): Boolean =
-        first.scheme.equals(second.scheme, ignoreCase = true) &&
-            first.host.equals(second.host, ignoreCase = true) &&
-            effectivePort(first) == effectivePort(second)
+}
 
-    private fun effectivePort(uri: URI): Int = when {
-        uri.port >= 0 -> uri.port
-        uri.scheme.equals("https", ignoreCase = true) -> 443
-        else -> 80
+data class GitLabIssueRef(
+    val projectPath: String,
+    val issueIid: Int,
+)
+
+object GitLabIssueUrlParser {
+    private val issuePath = Regex("^/(.+)/-/(?:issues|work_items)/(\\d+)/?$")
+
+    fun parse(issueUrl: String, gitLabBaseUrl: String): GitLabIssueRef? {
+        val canonicalBase = gitLabBaseUrl.canonicalGitLabOrigin() ?: return null
+        val base = runCatching { URI(canonicalBase) }.getOrNull() ?: return null
+        val link = runCatching { URI(issueUrl.trim()) }.getOrNull() ?: return null
+        if (!link.isAbsolute || link.userInfo != null || link.query != null || link.fragment != null) return null
+        if (link.rawAuthority?.endsWith(':') != false || link.port != -1 && link.port !in 1..65535) return null
+        if (!sameOrigin(base, link)) return null
+        val rawPath = link.rawPath ?: return null
+        if (Regex("%(?:2f|5c)", RegexOption.IGNORE_CASE).containsMatchIn(rawPath)) return null
+        val match = issuePath.matchEntire(link.path) ?: return null
+        val projectPath = match.groupValues[1]
+        val issueIid = match.groupValues[2].toIntOrNull() ?: return null
+        val segments = projectPath.split('/')
+        if (
+            issueIid <= 0 ||
+            segments.size < 2 ||
+            segments.first().equals("groups", ignoreCase = true) ||
+            segments.any { it.isBlank() || it == "." || it == ".." }
+        ) return null
+        return GitLabIssueRef(projectPath, issueIid)
     }
+}
+
+private fun sameOrigin(first: URI, second: URI): Boolean =
+    first.scheme.equals(second.scheme, ignoreCase = true) &&
+        first.host.equals(second.host, ignoreCase = true) &&
+        effectivePort(first) == effectivePort(second)
+
+private fun effectivePort(uri: URI): Int = when {
+    uri.port >= 0 -> uri.port
+    uri.scheme.equals("https", ignoreCase = true) -> 443
+    else -> 80
 }
 
 object GitLabIssueBranchParser {

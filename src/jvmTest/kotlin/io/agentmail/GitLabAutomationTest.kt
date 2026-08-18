@@ -6,6 +6,51 @@ import kotlin.test.assertNull
 
 class GitLabAutomationTest {
     @Test
+    fun `parses trusted GitLab work item URL`() {
+        assertEquals(
+            GitLabIssueRef("casheers/ios-client", 1331),
+            GitLabIssueUrlParser.parse(
+                "https://gitlab.elementpay.io/casheers/ios-client/-/work_items/1331",
+                "https://gitlab.elementpay.io",
+            ),
+        )
+    }
+
+    @Test
+    fun `parses trusted GitLab issue URL with nested project path`() {
+        assertEquals(
+            GitLabIssueRef("group/platform/project", 123),
+            GitLabIssueUrlParser.parse(
+                "https://gitlab.example.com:443/group/platform/project/-/issues/123/",
+                "https://gitlab.example.com",
+            ),
+        )
+    }
+
+    @Test
+    fun `rejects untrusted and malformed GitLab issue URLs`() {
+        val baseUrl = "https://gitlab.example.com"
+        listOf(
+            "https://gitlab.example.com.attacker.test/group/project/-/issues/1",
+            "https://gitlab.example.com.attacker.test/group/project/-/work_items/1",
+            "http://gitlab.example.com/group/project/-/issues/1",
+            "https://gitlab.example.com:8443/group/project/-/issues/1",
+            "https://gitlab.example.com:/group/project/-/issues/1",
+            "https://user@gitlab.example.com/group/project/-/issues/1",
+            "https://gitlab.example.com/group/project/-/issues/1?token=x",
+            "https://gitlab.example.com/group/project/-/issues/1#note",
+            "https://gitlab.example.com/group/project/-/merge_requests/1",
+            "https://gitlab.example.com/group/project/-/issues/0",
+            "https://gitlab.example.com/123/-/work_items/5",
+            "https://gitlab.example.com/groups/acme/-/work_items/5",
+            "https://gitlab.example.com/group%2Fproject/-/issues/1",
+            "https://gitlab.example.com/group/../project/-/issues/1",
+        ).forEach { issueUrl ->
+            assertNull(GitLabIssueUrlParser.parse(issueUrl, baseUrl), issueUrl)
+        }
+    }
+
+    @Test
     fun `parses live GitLab notification with merge line in body`() {
         val message = MailMessage(
             uid = 1,

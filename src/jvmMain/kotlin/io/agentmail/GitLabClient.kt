@@ -33,6 +33,32 @@ class GitLabClient internal constructor(private val http: HttpClient) : GitLabIs
         checkResponse(response.status.value)
     }
 
+    suspend fun addIssueLabels(
+        baseUrl: String,
+        token: String,
+        issueUrl: String,
+        labels: List<String>,
+    ): Int {
+        val ref = requireNotNull(GitLabIssueUrlParser.parse(issueUrl, baseUrl)) {
+            "Ссылка должна вести на задачу в настроенном GitLab"
+        }
+        require(token.isNotBlank()) { "GitLab access token не сохранён" }
+        val normalizedLabels = labels.map(String::trim).filter(String::isNotEmpty).distinct()
+        require(normalizedLabels.isNotEmpty()) { "Выберите хотя бы одну метку" }
+        require(normalizedLabels.none { ',' in it }) { "Название метки не должно содержать запятую" }
+
+        val canonicalBase = checkNotNull(baseUrl.canonicalGitLabOrigin())
+        val project = ref.projectPath.encodeURLPathPart()
+        val response = http.put("$canonicalBase/api/v4/projects/$project/issues/${ref.issueIid}") {
+            header(PRIVATE_TOKEN, token)
+            setBody(FormDataContent(Parameters.build {
+                append("add_labels", normalizedLabels.joinToString(","))
+            }))
+        }
+        checkResponse(response.status.value)
+        return ref.issueIid
+    }
+
     override suspend fun reviewMergedIssue(
         baseUrl: String,
         token: String,

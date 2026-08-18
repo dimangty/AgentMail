@@ -21,6 +21,136 @@ import kotlin.test.assertTrue
 
 class GitLabClientTest {
     @Test
+    fun `maps trusted work item URL to issue labels API`() = runTest {
+        var requests = 0
+        val engine = MockEngine { request ->
+            requests++
+            assertEquals(HttpMethod.Put, request.method)
+            assertEquals("gitlab.elementpay.io", request.url.host)
+            assertEquals("/api/v4/projects/casheers%2Fios-client/issues/1331", request.url.encodedPath)
+            assertEquals("secret-token", request.headers["PRIVATE-TOKEN"])
+            val body = (request.body as OutgoingContent.ByteArrayContent).bytes().decodeToString()
+            assertTrue(body.contains("add_labels=env%3Adev%2Cenv%3Aprod%2Cenv%3Asbox"), body)
+            assertFalse(body.contains("remove_labels"), body)
+            respond("{}", HttpStatusCode.OK)
+        }
+        val http = HttpClient(engine) {
+            install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+            expectSuccess = false
+            followRedirects = false
+        }
+
+        GitLabClient(http).use { client ->
+            assertEquals(
+                1331,
+                client.addIssueLabels(
+                    baseUrl = "https://gitlab.elementpay.io",
+                    token = "secret-token",
+                    issueUrl = "https://gitlab.elementpay.io/casheers/ios-client/-/work_items/1331",
+                    labels = listOf("env:dev", "env:prod", "env:sbox"),
+                ),
+            )
+        }
+        assertEquals(1, requests)
+    }
+
+    @Test
+    fun `adds selected labels to trusted issue without removing existing labels`() = runTest {
+        var requests = 0
+        val engine = MockEngine { request ->
+            requests++
+            assertEquals(HttpMethod.Put, request.method)
+            assertEquals("/api/v4/projects/group%2Fproject/issues/123", request.url.encodedPath)
+            assertEquals("secret-token", request.headers["PRIVATE-TOKEN"])
+            assertFalse(request.url.toString().contains("secret-token"))
+            val body = (request.body as OutgoingContent.ByteArrayContent).bytes().decodeToString()
+            assertTrue(body.contains("add_labels=env%3Adev%2Cenv%3Aprod"), body)
+            assertFalse(body.contains("remove_labels"), body)
+            assertFalse(body.contains("secret-token"), body)
+            respond("{}", HttpStatusCode.OK)
+        }
+        val http = HttpClient(engine) {
+            install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+            expectSuccess = false
+            followRedirects = false
+        }
+
+        GitLabClient(http).use { client ->
+            assertEquals(
+                123,
+                client.addIssueLabels(
+                    baseUrl = "https://gitlab.example.com",
+                    token = "secret-token",
+                    issueUrl = "https://gitlab.example.com/group/project/-/issues/123",
+                    labels = listOf("env:dev", "env:prod"),
+                ),
+            )
+        }
+        assertEquals(1, requests)
+    }
+
+    @Test
+    fun `rejects unsafe issue URLs before sending token`() = runTest {
+        var requests = 0
+        val engine = MockEngine {
+            requests++
+            respond("{}", HttpStatusCode.OK)
+        }
+        val http = HttpClient(engine) {
+            install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+            expectSuccess = false
+        }
+
+        GitLabClient(http).use { client ->
+            listOf(
+                "https://gitlab.example.com.attacker.test/group/project/-/issues/123",
+                "https://gitlab.example.com/123/-/work_items/5",
+                "https://gitlab.example.com/groups/acme/-/work_items/5",
+            ).forEach { issueUrl ->
+                assertFailsWith<IllegalArgumentException>(issueUrl) {
+                    client.addIssueLabels(
+                        baseUrl = "https://gitlab.example.com",
+                        token = "secret-token",
+                        issueUrl = issueUrl,
+                        labels = listOf("env:dev"),
+                    )
+                }
+            }
+        }
+        assertEquals(0, requests)
+    }
+
+    @Test
+    fun `does not follow redirect while adding issue labels`() = runTest {
+        var requests = 0
+        val engine = MockEngine {
+            requests++
+            respond(
+                "",
+                HttpStatusCode.Found,
+                headersOf(HttpHeaders.Location, "https://attacker.test/steal"),
+            )
+        }
+        val http = HttpClient(engine) {
+            install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+            expectSuccess = false
+            followRedirects = false
+        }
+
+        GitLabClient(http).use { client ->
+            assertFailsWith<IllegalStateException> {
+                client.addIssueLabels(
+                    baseUrl = "https://gitlab.example.com",
+                    token = "secret-token",
+                    issueUrl = "https://gitlab.example.com/group/project/-/issues/123",
+                    labels = listOf("env:dev"),
+                )
+            }
+        }
+        assertEquals(1, requests)
+    }
+
+    @Test
     fun `verifies merged request and updates issue labels`() = runTest {
         var requests = 0
         val engine = MockEngine { request ->

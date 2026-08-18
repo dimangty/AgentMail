@@ -1,6 +1,7 @@
 package io.agentmail
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -29,6 +30,9 @@ data class ControllerState(
     val busy: Boolean = false,
     val notice: String? = null,
     val noticeIsError: Boolean = false,
+    val issueLabelsBusy: Boolean = false,
+    val issueLabelsNotice: String? = null,
+    val issueLabelsNoticeIsError: Boolean = false,
 )
 
 /**
@@ -56,7 +60,7 @@ class AppController(
             settings = settings,
             hasMailAndTelegramSecrets = secrets != null,
             hasCustomApiKey = !secrets?.llmApiKey.isNullOrBlank(),
-            hasGitLabToken = !secrets?.gitLabAccessToken.isNullOrBlank(),
+            hasGitLabToken = store.loadGitLabAccessToken().isNotBlank(),
         )
     })
     /** Сохранённая конфигурация и состояние операций формы без значений секретов. */
@@ -99,7 +103,7 @@ class AppController(
             settings = normalized,
             hasMailAndTelegramSecrets = savedSecrets != null,
             hasCustomApiKey = !savedSecrets?.llmApiKey.isNullOrBlank(),
-            hasGitLabToken = !savedSecrets?.gitLabAccessToken.isNullOrBlank(),
+            hasGitLabToken = store.loadGitLabAccessToken().isNotBlank(),
             notice = "Настройки сохранены в системном хранилище",
             noticeIsError = false,
         )
@@ -200,6 +204,44 @@ class AppController(
         }
     }
 
+    @Synchronized
+    internal fun applyIssueLabels(issueUrl: String, selectedLabels: Set<TaskLabelOption>) {
+        if (mutableState.value.issueLabelsBusy) return
+        val baseUrl = mutableState.value.settings.gitLabBaseUrl
+        val token = store.loadGitLabAccessToken()
+        val labels = taskLabelCatalog.filter(selectedLabels::contains).map(TaskLabelOption::value)
+        val validationError = when {
+            baseUrl.isBlank() || token.isBlank() -> "Сначала сохраните GitLab Base URL и access token в настройках"
+            issueUrl.isBlank() -> "Вставьте ссылку на задачу GitLab"
+            labels.isEmpty() -> "Выберите хотя бы одну метку"
+            else -> null
+        }
+        if (validationError != null) {
+            showIssueLabelsError(validationError)
+            return
+        }
+
+        mutableState.value = mutableState.value.copy(
+            issueLabelsBusy = true,
+            issueLabelsNotice = "Применяю метки...",
+            issueLabelsNoticeIsError = false,
+        )
+        scope.launch {
+            try {
+                val issueIid = gitLab.addIssueLabels(baseUrl, token, issueUrl, labels)
+                mutableState.value = mutableState.value.copy(
+                    issueLabelsBusy = false,
+                    issueLabelsNotice = "Метки применены к задаче #$issueIid",
+                    issueLabelsNoticeIsError = false,
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                showIssueLabelsError("Не удалось применить метки. Проверьте ссылку и доступ GitLab")
+            }
+        }
+    }
+
     /**
      * Объединяет общую валидацию конфигурации с проверкой Ollama-модели по последнему
      * загруженному каталогу. Возвращаемые строки предназначены непосредственно для UI.
@@ -226,6 +268,14 @@ class AppController(
             busy = false,
             notice = message.take(500),
             noticeIsError = true,
+        )
+    }
+
+    private fun showIssueLabelsError(message: String) {
+        mutableState.value = mutableState.value.copy(
+            issueLabelsBusy = false,
+            issueLabelsNotice = message.take(500),
+            issueLabelsNoticeIsError = true,
         )
     }
 

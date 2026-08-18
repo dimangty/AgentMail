@@ -90,6 +90,8 @@ class SettingsStore : AutoCloseable {
         return secrets.takeIf { it.mailPassword.isNotBlank() && it.telegramBotToken.isNotBlank() }
     }
 
+    internal fun loadGitLabAccessToken(): String = password(GITLAB_ACCESS_TOKEN)
+
     /**
      * Загружает позицию последнего опроса для [accountKey].
      * Ключ аккаунта преобразуется в короткий хеш, чтобы исходный идентификатор

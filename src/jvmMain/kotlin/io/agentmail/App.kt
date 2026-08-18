@@ -3,6 +3,8 @@
 package io.agentmail
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,12 +16,15 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -27,6 +32,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -46,12 +53,27 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.PopupProperties
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
@@ -63,6 +85,11 @@ private val Mint = Color(0xFF68E0B8)
 private val Warm = Color(0xFFFFC36A)
 private val Danger = Color(0xFFFF7D8D)
 private val Muted = Color(0xFF93A4BD)
+
+private enum class AppScreen {
+    SETTINGS,
+    TASK_CREATION,
+}
 
 /**
  * Корневой экран настройки, запуска и наблюдения за почтовым агентом.
@@ -83,6 +110,9 @@ fun AgentMailApp(controller: AppController) {
     var llmApiKey by remember { mutableStateOf("") }
     var telegramToken by remember { mutableStateOf("") }
     var gitLabToken by remember { mutableStateOf("") }
+    var currentScreen by remember { mutableStateOf(AppScreen.SETTINGS) }
+    var issueUrl by remember { mutableStateOf("") }
+    var selectedTaskLabels by remember { mutableStateOf(emptySet<TaskLabelOption>()) }
     val llmReady = settings.llmProvider != LlmProviderType.OLLAMA ||
         (!controllerState.ollamaModelsLoading &&
             controllerState.ollamaModelsError == null &&
@@ -128,7 +158,14 @@ fun AgentMailApp(controller: AppController) {
     ) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Row(Modifier.fillMaxSize().background(Ink)) {
-                BrandRail(monitor.status)
+                BrandRail(
+                    status = monitor.status,
+                    currentScreen = currentScreen,
+                    onOpenSettings = { currentScreen = AppScreen.SETTINGS },
+                    onOpenTask = { currentScreen = AppScreen.TASK_CREATION },
+                )
+                when (currentScreen) {
+                    AppScreen.SETTINGS ->
                 Column(
                     modifier = Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState())
                         .padding(horizontal = 34.dp, vertical = 28.dp),
@@ -354,6 +391,20 @@ fun AgentMailApp(controller: AppController) {
                     }
                     Spacer(Modifier.height(20.dp))
                 }
+                    AppScreen.TASK_CREATION -> GitLabIssueLabelsScreen(
+                        modifier = Modifier.weight(1f),
+                        issueUrl = issueUrl,
+                        onIssueUrlChange = { issueUrl = it },
+                        selectedLabels = selectedTaskLabels,
+                        onSelectedLabelsChange = { selectedTaskLabels = it },
+                        configured = controllerState.settings.gitLabBaseUrl.isNotBlank() &&
+                            controllerState.hasGitLabToken,
+                        busy = controllerState.issueLabelsBusy,
+                        notice = controllerState.issueLabelsNotice,
+                        noticeIsError = controllerState.issueLabelsNoticeIsError,
+                        onApply = { controller.applyIssueLabels(issueUrl, selectedTaskLabels) },
+                    )
+                }
                 StatusPanel(monitor, hasRequiredSecrets)
             }
         }
@@ -361,19 +412,300 @@ fun AgentMailApp(controller: AppController) {
 }
 
 @Composable
-private fun BrandRail(status: MonitorStatus) {
+private fun BrandRail(
+    status: MonitorStatus,
+    currentScreen: AppScreen,
+    onOpenSettings: () -> Unit,
+    onOpenTask: () -> Unit,
+) {
     Column(
-        modifier = Modifier.width(82.dp).fillMaxHeight().background(Panel).padding(vertical = 26.dp),
+        modifier = Modifier.width(96.dp).fillMaxHeight().background(Panel).padding(vertical = 26.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Box(Modifier.size(42.dp).background(Electric, RoundedCornerShape(13.dp)), contentAlignment = Alignment.Center) {
             Text("@", color = Ink, fontWeight = FontWeight.Black, fontSize = 24.sp)
         }
+        Spacer(Modifier.height(28.dp))
+        RailDestinationButton(
+            marker = "+",
+            label = "ЗАДАЧА",
+            selected = currentScreen == AppScreen.TASK_CREATION,
+            onClick = onOpenTask,
+        )
+        Spacer(Modifier.height(12.dp))
+        RailDestinationButton(
+            marker = "S",
+            label = "НАСТР.",
+            selected = currentScreen == AppScreen.SETTINGS,
+            onClick = onOpenSettings,
+        )
         Spacer(Modifier.weight(1f))
         Box(Modifier.size(10.dp).background(statusColor(status), CircleShape))
         Spacer(Modifier.height(12.dp))
         Text("AM", color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
     }
+}
+
+@Composable
+private fun RailDestinationButton(
+    marker: String,
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.width(72.dp).background(
+            if (selected) Electric.copy(alpha = 0.14f) else Color.Transparent,
+            RoundedCornerShape(13.dp),
+        ).clickable(role = Role.Tab, onClick = onClick).semantics {
+            this.selected = selected
+        }.padding(vertical = 9.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Box(
+            modifier = Modifier.size(30.dp).background(
+                if (selected) Electric else Raised,
+                RoundedCornerShape(9.dp),
+            ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(marker, color = if (selected) Ink else Muted, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+        }
+        Text(
+            label,
+            color = if (selected) Electric else Muted,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.4.sp,
+        )
+    }
+}
+
+@Composable
+private fun GitLabIssueLabelsScreen(
+    modifier: Modifier = Modifier,
+    issueUrl: String,
+    onIssueUrlChange: (String) -> Unit,
+    selectedLabels: Set<TaskLabelOption>,
+    onSelectedLabelsChange: (Set<TaskLabelOption>) -> Unit,
+    configured: Boolean,
+    busy: Boolean,
+    notice: String?,
+    noticeIsError: Boolean,
+    onApply: () -> Unit,
+) {
+    Column(
+        modifier = modifier.fillMaxHeight().verticalScroll(rememberScrollState())
+            .padding(horizontal = 34.dp, vertical = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
+    ) {
+        Text("Метки GitLab", fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
+        Text(
+            "Вставьте ссылку на задачу и выберите метки, которые нужно к ней добавить.",
+            color = Muted,
+            fontSize = 14.sp,
+        )
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Panel),
+            shape = RoundedCornerShape(18.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+                OutlinedTextField(
+                    value = issueUrl,
+                    onValueChange = onIssueUrlChange,
+                    label = { Text("Ссылка на задачу GitLab") },
+                    placeholder = { Text("https://gitlab.company.io/group/project/-/issues/123") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                )
+                TaskLabelPicker(selectedLabels, onSelectedLabelsChange)
+                if (!configured) {
+                    Notice("Сначала сохраните GitLab Base URL и access token в настройках", true)
+                }
+                notice?.let { Notice(it, noticeIsError) }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    Button(
+                        onClick = onApply,
+                        enabled = configured && issueUrl.isNotBlank() && selectedLabels.isNotEmpty() && !busy,
+                    ) {
+                        if (busy) {
+                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text(if (busy) "Применяю..." else "Применить метки")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TaskLabelPicker(
+    selectedLabels: Set<TaskLabelOption>,
+    onSelectedLabelsChange: (Set<TaskLabelOption>) -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    var expanded by remember { mutableStateOf(false) }
+    var highlightedIndex by remember { mutableStateOf(0) }
+    val focusRequester = remember { FocusRequester() }
+    val filteredLabels = filterTaskLabels(query)
+
+    LaunchedEffect(query, expanded) {
+        highlightedIndex = 0
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        Text("Метки", color = Muted, fontSize = 12.sp)
+        Box(Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).border(
+                    width = 1.dp,
+                    color = if (expanded) Electric else Muted.copy(alpha = 0.65f),
+                    shape = RoundedCornerShape(12.dp),
+                ).background(Ink.copy(alpha = 0.35f), RoundedCornerShape(12.dp)).clickable {
+                    expanded = true
+                    focusRequester.requestFocus()
+                }.padding(horizontal = 12.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                taskLabelCatalog.filter(selectedLabels::contains).forEach { label ->
+                    SelectedTaskLabelToken(label) {
+                        onSelectedLabelsChange(toggleTaskLabelSelection(selectedLabels, label))
+                    }
+                }
+                BasicTextField(
+                    value = query,
+                    onValueChange = {
+                        query = it
+                        expanded = true
+                    },
+                    modifier = Modifier.weight(1f).widthIn(min = 90.dp).focusRequester(focusRequester)
+                        .onPreviewKeyEvent { event ->
+                            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                            when (event.key) {
+                                Key.DirectionDown -> {
+                                    expanded = true
+                                    if (filteredLabels.isNotEmpty()) {
+                                        highlightedIndex = (highlightedIndex + 1) % filteredLabels.size
+                                    }
+                                    true
+                                }
+                                Key.DirectionUp -> {
+                                    expanded = true
+                                    if (filteredLabels.isNotEmpty()) {
+                                        highlightedIndex = (highlightedIndex - 1 + filteredLabels.size) % filteredLabels.size
+                                    }
+                                    true
+                                }
+                                Key.Enter -> {
+                                    if (expanded && filteredLabels.isNotEmpty()) {
+                                        val label = filteredLabels[highlightedIndex.coerceIn(filteredLabels.indices)]
+                                        onSelectedLabelsChange(toggleTaskLabelSelection(selectedLabels, label))
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                }
+                                Key.Escape -> {
+                                    expanded = false
+                                    true
+                                }
+                                else -> false
+                            }
+                        }.semantics {
+                            contentDescription = "Поиск меток"
+                            stateDescription = when {
+                                !expanded -> "Список свёрнут"
+                                filteredLabels.isEmpty() -> "Список открыт, метки не найдены"
+                                else -> {
+                                    val activeIndex = highlightedIndex.coerceIn(filteredLabels.indices)
+                                    "Список открыт, ${activeIndex + 1} из ${filteredLabels.size}: " +
+                                        filteredLabels[activeIndex].value
+                                }
+                            }
+                        },
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = Color.White),
+                    cursorBrush = SolidColor(Electric),
+                    decorationBox = { innerTextField ->
+                        if (query.isEmpty()) {
+                            Text(
+                                if (selectedLabels.isEmpty()) "Найти метку" else "Добавить...",
+                                color = Muted,
+                            )
+                        }
+                        innerTextField()
+                    },
+                )
+            }
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+                modifier = Modifier.width(520.dp).background(Raised),
+                properties = PopupProperties(focusable = false),
+            ) {
+                if (filteredLabels.isEmpty()) {
+                    DropdownMenuItem(
+                        text = { Text("Метки не найдены", color = Muted) },
+                        onClick = {},
+                        enabled = false,
+                    )
+                } else {
+                    filteredLabels.forEachIndexed { index, label ->
+                        DropdownMenuItem(
+                            modifier = Modifier.background(
+                                if (index == highlightedIndex) Electric.copy(alpha = 0.1f) else Color.Transparent,
+                            ),
+                            text = {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    Box(Modifier.size(12.dp).background(taskLabelColor(label)))
+                                    Text(label.value, modifier = Modifier.weight(1f))
+                                    if (label in selectedLabels) Text("Выбрано", color = Mint, fontSize = 11.sp)
+                                }
+                            },
+                            onClick = {
+                                onSelectedLabelsChange(toggleTaskLabelSelection(selectedLabels, label))
+                                expanded = true
+                                focusRequester.requestFocus()
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SelectedTaskLabelToken(label: TaskLabelOption, onRemove: () -> Unit) {
+    Row(
+        modifier = Modifier.background(taskLabelColor(label).copy(alpha = 0.16f), RoundedCornerShape(7.dp))
+            .clickable(role = Role.Button, onClick = onRemove).semantics {
+                contentDescription = "Удалить метку ${label.value}"
+            }.padding(horizontal = 7.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Box(Modifier.size(8.dp).background(taskLabelColor(label)))
+        Text(label.value, color = Color.White, fontSize = 12.sp)
+        Text("x", color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+private fun taskLabelColor(label: TaskLabelOption): Color = when (label) {
+    TaskLabelOption.ENV_DEV -> Electric
+    TaskLabelOption.ENV_PROD -> Danger
+    TaskLabelOption.ENV_SBOX -> Color(0xFFB1BAC8)
+    TaskLabelOption.ENV_UAT -> Warm
 }
 
 @Composable

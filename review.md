@@ -67,3 +67,46 @@ The fix must:
 - cover the exact live format with `subject = "Test"`, first body line `Merge request !2 was merged`, branch `features/issue-1`, and MR link ending in `/2`;
 - retain the authoritative GitLab API `state == merged` check and source-branch issue resolution;
 - document that an email already passed by the IMAP cursor cannot be replayed automatically, so verification after the fix requires a new merge notification unless a safe explicit replay facility is added.
+
+# GitLab issue labels screen
+
+## Goal
+
+Add a button to the existing left rail that opens a screen for applying labels to an existing GitLab issue by URL.
+
+## Requirements
+
+- Keep the current Compose Desktop visual language and dark theme.
+- Add lightweight local navigation; do not add a navigation dependency for two screens.
+- Keep the current settings screen available from the left rail.
+- Replace the free-form task description with a single-line GitLab issue URL field.
+- Add a multi-select label picker inspired by the supplied references:
+  - compact outlined input;
+  - selected labels shown in the control;
+  - typing filters the dropdown;
+  - dropdown rows show a colored square and label name;
+  - available labels: `env:dev`, `env:prod`, `env:sbox`, `env:uat`.
+- Preserve selected labels while filtering and allow clicking a selected label again to remove it.
+- Add a primary action button that applies the selected labels to the issue through the GitLab API.
+- Use only the saved GitLab Base URL and access token from the OS keyring.
+- Reject issue URLs whose origin differs from the saved trusted GitLab Base URL before making any request.
+- Accept canonical GitLab issue URLs shaped like `https://gitlab.example/group/project/-/issues/123`.
+- Add selected labels through GitLab's `add_labels` API without removing existing issue labels.
+- Disable duplicate submissions while a request is running and show progress, success, and safe error feedback.
+- Keep the issue URL and selected labels local; clear neither after a failed request.
+- If GitLab is not configured, explain that Base URL and access token must be saved in Settings.
+- Avoid changes to email mention matching, saved settings, and GitLab automation labels.
+- Add focused unit tests for label filtering/selection, trusted issue URL parsing, request method/path/body/token handling, and rejection of untrusted URLs without a request.
+
+## Acceptance checks
+
+- The new rail button clearly opens the task screen and shows a selected state.
+- A settings rail button returns to the existing screen without resetting its draft.
+- The URL field accepts an existing GitLab issue link.
+- Label filtering is case-insensitive and preserves catalog order.
+- Selecting and deselecting labels works while the dropdown remains usable.
+- Empty-result feedback is visible.
+- The action is enabled only for a nonblank URL, at least one selected label, saved GitLab configuration, and no request in progress.
+- Clicking the action sends one PUT request with `add_labels` and never sends the token to an untrusted origin.
+- Existing labels are preserved because `remove_labels` is not sent.
+- `./gradlew jvmTest` and `./gradlew compileKotlinJvm` pass.
