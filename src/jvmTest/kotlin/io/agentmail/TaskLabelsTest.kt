@@ -4,6 +4,10 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
+/**
+ * Фиксирует UI-контракт каталога меток: стабильный порядок, предсказуемый поиск
+ * и переключение одного элемента без потери остальных выбранных значений.
+ */
 class TaskLabelsTest {
     @Test
     fun `catalog contains labels in display order`() {

@@ -39,11 +39,14 @@ class SettingsStore : AutoCloseable {
     )
 
     /**
-     * Сохраняет нормализованные текстовые настройки и при необходимости [secrets].
+     * Сохраняет несекретные настройки с нормализацией внешних пробелов и при
+     * необходимости обновляет [secrets]. Полнота и корректность конфигурации здесь не
+     * проверяются: эту границу обеспечивает [AppController].
      *
-     * `null` не изменяет данные keyring. Почтовый пароль и Telegram-токен записываются
-     * как переданы, а пустой API-ключ не стирает ранее сохранённый ключ.
-     * Устаревшие настройки Qwen удаляются при каждом сохранении.
+     * `null` не изменяет keyring. В переданном комплекте почтовый пароль и
+     * Telegram-токен записываются как есть, а пустые API-ключ модели и GitLab-токен
+     * не стирают ранее сохранённые значения. Запись `Preferences` и keyring не является
+     * общей транзакцией. Устаревшие настройки Qwen удаляются при каждом сохранении.
      */
     fun save(settings: AppSettings, secrets: Secrets?) {
         preferences.put("email", settings.email.trim())
@@ -90,6 +93,13 @@ class SettingsStore : AutoCloseable {
         return secrets.takeIf { it.mailPassword.isNotBlank() && it.telegramBotToken.isNotBlank() }
     }
 
+    /**
+     * Загружает GitLab-токен независимо от полноты общего комплекта [Secrets].
+     *
+     * Это позволяет ручной GitLab-операции использовать сохранённые учётные данные,
+     * даже если [loadSecrets] возвращает `null` из-за отсутствия почтового пароля или
+     * Telegram-токена. Отсутствующий токен или ошибка keyring представлены пустой строкой.
+     */
     internal fun loadGitLabAccessToken(): String = password(GITLAB_ACCESS_TOKEN)
 
     /**

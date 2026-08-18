@@ -4,6 +4,13 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
+/**
+ * Проверяет позитивные форматы GitLab и fail-closed границу парсеров.
+ *
+ * Security-сценарии сгруппированы в матрицы, чтобы одна проверка фиксировала классы
+ * атак, а не отдельный пример: подмена origin, неоднозначный authority, скрытые
+ * разделители rawPath и расхождение независимых признаков уведомления.
+ */
 class GitLabAutomationTest {
     @Test
     fun `parses trusted GitLab work item URL`() {
@@ -30,6 +37,9 @@ class GitLabAutomationTest {
     @Test
     fun `rejects untrusted and malformed GitLab issue URLs`() {
         val baseUrl = "https://gitlab.example.com"
+        // Матрица покрывает подмену хоста/схемы/порта, user info, лишние компоненты,
+        // неверный тип ресурса и обход структуры project path. Любая строка обязана
+        // завершиться `null`, иначе вызывающий код может отправить токен не туда.
         listOf(
             "https://gitlab.example.com.attacker.test/group/project/-/issues/1",
             "https://gitlab.example.com.attacker.test/group/project/-/work_items/1",
@@ -157,6 +167,8 @@ class GitLabAutomationTest {
             links = link,
         )
 
+        // Матрица подтверждает, что признаки не комбинируются из пересланного текста:
+        // merge-фраза должна быть первой, не быть цитатой и совпасть с IID ссылки.
         assertNull(GitLabMergeNotificationParser.parse(base, "https://gitlab.example.com"))
         assertNull(
             GitLabMergeNotificationParser.parse(

@@ -37,6 +37,10 @@ class DeliveryKeyTest {
         assertEquals(DeliveryKey.email(first), DeliveryKey.email(moved))
     }
 
+    /**
+     * Профиль GitLab не должен зависеть от маршрута Telegram, но обязан различать
+     * разные GitLab origins и канонизировать эквивалентные варианты одного origin.
+     */
     @Test
     fun `GitLab profile ignores Telegram routing`() {
         val settings = AppSettings(

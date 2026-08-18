@@ -61,6 +61,13 @@ data class Secrets(
     val gitLabAccessToken: String = "",
 )
 
+/**
+ * Гиперссылка, извлечённая из HTML-части письма.
+ *
+ * [text] — видимая подпись ссылки, а [href] — фактический адрес перехода. Проверки
+ * доверенного источника должны опираться на [href] и его origin, поскольку подпись
+ * письма может не совпадать с адресом.
+ */
 data class MailLink(
     val text: String,
     val href: String,
@@ -93,6 +100,13 @@ data class MailMessage(
  */
 enum class DeliveryStatus { ATTEMPTING, DELIVERED, UNKNOWN, FAILED }
 
+/**
+ * Устойчивое состояние автоматического действия GitLab для конкретного письма.
+ *
+ * [ATTEMPTING] резервирует действие до сетевого вызова и предотвращает параллельный
+ * повтор, [SUCCEEDED] окончательно фиксирует успех, а [FAILED] разрешает последующую
+ * повторную попытку.
+ */
 enum class GitLabActionStatus { ATTEMPTING, SUCCEEDED, FAILED }
 
 /**
@@ -204,6 +218,16 @@ fun Secrets?.isCompleteFor(settings: AppSettings): Boolean =
 
 private fun String.isValidGitLabBaseUrl(): Boolean = canonicalGitLabOrigin() != null
 
+/**
+ * Проверяет и канонизирует корневой HTTPS origin GitLab.
+ *
+ * Разрешён только адрес без user info, пути, query и fragment, с корректным портом.
+ * Имя хоста и схема приводятся к нижнему регистру, завершающий `/` и стандартный порт
+ * 443 удаляются. IPv6-литерал сохраняется в квадратных скобках, необходимых в готовом
+ * URL; дополнительное обрамление учитывает реализации URI, возвращающие host без них.
+ * Для синтаксически неверного или не соответствующего этим ограничениям адреса
+ * возвращается `null`.
+ */
 internal fun String.canonicalGitLabOrigin(): String? = runCatching {
     val uri = URI(this)
     require(

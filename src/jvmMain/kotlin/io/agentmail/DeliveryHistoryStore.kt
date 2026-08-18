@@ -9,13 +9,19 @@ import java.sql.ResultSet
 import java.time.Instant
 
 /**
- * Устойчивый SQLite-журнал дедупликации Telegram-доставок.
+ * Устойчивый SQLite-журнал Telegram-доставок и действий над GitLab issues.
  *
- * Уникальность задаётся парой ключей профиля и письма. Основной переход имеет вид
- * `ATTEMPTING -> DELIVERED | FAILED | UNKNOWN`; `FAILED` можно снова зарезервировать,
- * `UNKNOWN` позднее подтвердить как `DELIVERED`, а остальные повторы блокируются.
- * Операции чтения и изменения синхронизированы в пределах экземпляра, а WAL
- * и ожидание занятой БД уменьшают конфликты между отдельными подключениями.
+ * В обоих журналах уникальность задаётся парой ключей профиля и письма, а резервация
+ * перед внешним запросом защищает от повторной обработки. Для Telegram переход имеет
+ * вид `ATTEMPTING -> DELIVERED | FAILED | UNKNOWN`: только гарантированный `FAILED`
+ * допускает повтор, а неоднозначный `UNKNOWN` блокирует дубликат. GitLab использует
+ * `ATTEMPTING -> SUCCEEDED | FAILED`, причём `FAILED` можно зарезервировать заново.
+ *
+ * Зависшие состояния восстанавливаются намеренно асимметрично. Неизвестно, принял ли
+ * Telegram сообщение, поэтому его попытка становится `UNKNOWN`; повторяемое изменение
+ * меток GitLab после прерывания становится `FAILED` и может быть безопасно запущено снова.
+ * Операции синхронизированы в пределах экземпляра, а WAL и ожидание занятой БД
+ * уменьшают конфликты между отдельными подключениями.
  */
 class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath()) : AutoCloseable {
     private val connection: Connection
@@ -34,6 +40,12 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
         recoverStaleGitLabActions()
     }
 
+    /**
+     * В одной транзакции доводит схему до [SCHEMA_VERSION], сохраняя существующую
+     * Telegram-историю. В частности, база версии 1 получает отдельный журнал GitLab;
+     * повторный запуск безопасен благодаря `IF NOT EXISTS`. Более новую неизвестную
+     * схему открывать запрещено, чтобы не интерпретировать её данные по старому контракту.
+     */
     private fun migrateSchema() {
         val version = connection.createStatement().use { statement ->
             statement.executeQuery("PRAGMA user_version").use { result ->
@@ -203,6 +215,11 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
         }
     }
 
+    /**
+     * Возвращает устойчивый статус действия GitLab либо `null`, если письмо ещё не
+     * обрабатывалось в этом профиле. Перед чтением просроченная резервация переводится
+     * из `ATTEMPTING` в повторяемый `FAILED`.
+     */
     @Synchronized
     fun gitLabActionStatus(profileKey: String, emailKey: String): GitLabActionStatus? {
         recoverStaleGitLabActions()
@@ -217,6 +234,11 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
         }
     }
 
+    /**
+     * Атомарно резервирует действие GitLab. Новая запись и прежний `FAILED` переходят
+     * в `ATTEMPTING`; `SUCCEEDED` и уже выполняющийся `ATTEMPTING` не перезаписываются.
+     * Возвращает `true`, только если вызывающий получил право выполнить внешний запрос.
+     */
     @Synchronized
     fun beginGitLabAction(profileKey: String, emailKey: String): Boolean {
         val now = System.currentTimeMillis()
@@ -238,11 +260,16 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
         }
     }
 
+    /** Завершает текущую резервацию GitLab как успешно выполненную и блокирует повторы. */
     @Synchronized
     fun markGitLabActionSucceeded(profileKey: String, emailKey: String) {
         updateGitLabStatus(profileKey, emailKey, GitLabActionStatus.SUCCEEDED, null)
     }
 
+    /**
+     * Завершает текущую резервацию GitLab как неуспешную, сохраняя ограниченный текст
+     * ошибки. Такой статус разрешает следующему циклу зарезервировать повтор.
+     */
     @Synchronized
     fun markGitLabActionFailed(profileKey: String, emailKey: String, error: String?) {
         updateGitLabStatus(profileKey, emailKey, GitLabActionStatus.FAILED, error)
@@ -262,6 +289,7 @@ class DeliveryHistoryStore(private val databasePath: Path = defaultDatabasePath(
     }
 
     private fun recoverStaleGitLabActions() {
+        // Изменение меток GitLab повторяемо, поэтому прерванную резервацию можно освободить для retry.
         connection.prepareStatement(
             "UPDATE gitlab_action_history SET status = 'FAILED', updated_at_ms = ?, " +
                 "last_error = 'Прерванная попытка' WHERE status = 'ATTEMPTING' AND reserved_at_ms < ?"

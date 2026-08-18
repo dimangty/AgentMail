@@ -86,6 +86,13 @@ private val Warm = Color(0xFFFFC36A)
 private val Danger = Color(0xFFFF7D8D)
 private val Muted = Color(0xFF93A4BD)
 
+/**
+ * Разделы однооконного интерфейса AgentMail.
+ *
+ * Это локальное состояние навигации без отдельного back stack: переключение раздела
+ * не пересоздаёт [AppController] и не сбрасывает черновики формы, принадлежащие
+ * корневой композиции.
+ */
 private enum class AppScreen {
     SETTINGS,
     TASK_CREATION,
@@ -482,6 +489,13 @@ private fun RailDestinationButton(
     }
 }
 
+/**
+ * Экран ручного добавления меток к задаче GitLab.
+ *
+ * Экран управляет только вводом ссылки и выбором меток. Признак [configured] относится
+ * к уже сохранённым настройкам и токену, а сетевую операцию и её результат передаёт
+ * контроллер через [onApply], [busy] и [notice].
+ */
 @Composable
 private fun GitLabIssueLabelsScreen(
     modifier: Modifier = Modifier,
@@ -543,6 +557,13 @@ private fun GitLabIssueLabelsScreen(
     }
 }
 
+/**
+ * Поиск и множественный выбор меток из фиксированного каталога задач.
+ *
+ * [selectedLabels] остаётся управляемым состоянием вызывающего кода. Сам picker
+ * хранит только поисковый запрос, видимость списка и позицию клавиатурного выделения;
+ * выбранные токены выводятся в порядке каталога, а не в порядке обхода `Set`.
+ */
 @Composable
 private fun TaskLabelPicker(
     selectedLabels: Set<TaskLabelOption>,
@@ -586,6 +607,9 @@ private fun TaskLabelPicker(
                     },
                     modifier = Modifier.weight(1f).widthIn(min = 90.dp).focusRequester(focusRequester)
                         .onPreviewKeyEvent { event ->
+                            // Меню не забирает фокус у поля, поэтому навигацию перехватываем до его обработки:
+                            // стрелки циклически меняют пункт, Enter переключает выбор, Escape закрывает список.
+                            // Остальные клавиши возвращаем полю ввода, а KeyUp не обрабатываем повторно.
                             if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                             when (event.key) {
                                 Key.DirectionDown -> {

@@ -8,7 +8,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/** Проверяет долговечность блокирующих состояний журнала между подключениями к SQLite. */
+/**
+ * Проверяет контракты SQLite-журнала на границах перезапуска: сохранение блокирующих
+ * состояний, повтор после явного отказа и миграцию схемы без потери Telegram-истории.
+ */
 class DeliveryHistoryStoreTest {
     /**
      * Подтверждённая доставка должна переживать закрытие БД, оставаться видимой
@@ -53,6 +56,10 @@ class DeliveryHistoryStoreTest {
         }
     }
 
+    /**
+     * Успешное GitLab-действие сохраняется между подключениями и остаётся окончательным:
+     * статус читается как `SUCCEEDED`, а новая резервация того же ключа отклоняется.
+     */
     @Test
     fun `successful GitLab action remains blocked after reopen`() {
         val directory = Files.createTempDirectory("agentmail-gitlab-history-test")
@@ -72,6 +79,10 @@ class DeliveryHistoryStoreTest {
         }
     }
 
+    /**
+     * `FAILED` означает гарантированно повторяемое GitLab-действие: тот же ключ можно
+     * атомарно перевести обратно в `ATTEMPTING` без удаления исторической записи.
+     */
     @Test
     fun `failed GitLab action can be reserved again`() {
         val directory = Files.createTempDirectory("agentmail-gitlab-retry-test")
@@ -82,6 +93,11 @@ class DeliveryHistoryStoreTest {
         }
     }
 
+    /**
+     * Имитирует реальную базу версии 1 без GitLab-таблицы. Открытие хранилища должно
+     * создать новую часть схемы, сохранить прежнюю Telegram-доставку и сразу позволить
+     * использовать журнал GitLab.
+     */
     @Test
     fun `version one database migrates without losing Telegram history`() {
         val directory = Files.createTempDirectory("agentmail-history-migration-test")

@@ -5,6 +5,10 @@ import jakarta.mail.internet.MimeMultipart
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
+/**
+ * Проверяет извлечение ссылок из MIME-дерева письма независимо от выбора текстового
+ * представления: ссылка из HTML-ветки `multipart/alternative` должна сохраняться.
+ */
 class MailClientLinkTest {
     @Test
     fun `preserves GitLab link from html alternative`() {

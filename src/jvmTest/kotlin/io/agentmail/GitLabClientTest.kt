@@ -19,6 +19,13 @@ import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
+/**
+ * Контрактные тесты HTTP-границы GitLabClient на MockEngine.
+ *
+ * Они проверяют не только маршруты и ответы, но и security-инварианты запроса:
+ * кодирование project path как одного параметра, передачу токена только заголовком,
+ * отсутствие удаления меток и запрет следования redirects с секретом.
+ */
 class GitLabClientTest {
     @Test
     fun `maps trusted work item URL to issue labels API`() = runTest {
@@ -30,6 +37,8 @@ class GitLabClientTest {
             assertEquals("/api/v4/projects/casheers%2Fios-client/issues/1331", request.url.encodedPath)
             assertEquals("secret-token", request.headers["PRIVATE-TOKEN"])
             val body = (request.body as OutgoingContent.ByteArrayContent).bytes().decodeToString()
+            // Ручная операция должна быть аддитивной: отсутствие remove_labels защищает
+            // метки, которые уже назначены задаче другими процессами или пользователями.
             assertTrue(body.contains("add_labels=env%3Adev%2Cenv%3Aprod%2Cenv%3Asbox"), body)
             assertFalse(body.contains("remove_labels"), body)
             respond("{}", HttpStatusCode.OK)
@@ -102,6 +111,8 @@ class GitLabClientTest {
         }
 
         GitLabClient(http).use { client ->
+            // Матрица объединяет внешне похожий host и URL, которые не идентифицируют
+            // проект. Главный постусловный инвариант ниже: ни один запрос не отправлен.
             listOf(
                 "https://gitlab.example.com.attacker.test/group/project/-/issues/123",
                 "https://gitlab.example.com/123/-/work_items/5",
@@ -138,6 +149,8 @@ class GitLabClientTest {
         }
 
         GitLabClient(http).use { client ->
+            // 3xx является ошибкой, а не вторым запросом к Location: иначе заголовок
+            // PRIVATE-TOKEN мог бы быть раскрыт origin, выбранному ответом сервера.
             assertFailsWith<IllegalStateException> {
                 client.addIssueLabels(
                     baseUrl = "https://gitlab.example.com",
@@ -244,6 +257,8 @@ class GitLabClientTest {
         }
 
         GitLabClient(http).use { client ->
+            // Тот же запрет фиксируется отдельно для автоматического review-потока,
+            // поскольку он начинает работу с GET и тоже несёт секретный заголовок.
             assertFailsWith<IllegalStateException> {
                 client.reviewMergedIssue(
                     "https://gitlab.example.com",

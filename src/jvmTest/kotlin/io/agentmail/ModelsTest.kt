@@ -75,6 +75,12 @@ class ModelsTest {
         assertTrue(secrets.isCompleteFor(settings))
     }
 
+    /**
+     * Фиксирует единое понятие origin, от которого зависит доверие к GitLab-токену:
+     * регистр, корневой `/` и явный порт 443 не создают новый origin. Одновременно
+     * проверяет отдельную ветку сериализации IPv6 со скобками и отклонение портов вне
+     * допустимого диапазона, включая синтаксически незавершённый порт после `:`.
+     */
     @Test
     fun `normalizes equivalent GitLab origins`() {
         assertEquals(
